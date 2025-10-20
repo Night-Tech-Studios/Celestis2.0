@@ -1,0 +1,43 @@
+{
+  "name": "celestis-ai-avatar",
+  "version": "1.0.0",
+  "description": "AI Avatar project with VRM support, OpenRouter API, and speech-to-text",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "install-deps": "npm install"
+  },
+  "keywords": [
+    "ai",
+    "vrm",
+    "avatar",
+    "openrouter",
+    "speech-to-text"
+  ],
+  "author": "Celestis",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^25.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "^2.1.3",
+    "axios": "^1.4.0",
+    "fflate": "^0.8.2",
+    "three": "^0.164.1"
+  },
+  "build": {
+    "appId": "com.celestis.ai-avatar",
+    "productName": "Celestis AI Avatar",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/**/*"
+    ]
+  }
+}

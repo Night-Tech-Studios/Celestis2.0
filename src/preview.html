@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Avatar Preview</title>
+  <style>
+    html,body{height:100%;margin:0;background:#111}
+    #previewCanvas{width:100%;height:100%;display:block}
+    #status{position:absolute;right:10px;top:10px;color:#fff;background:rgba(0,0,0,0.4);padding:6px 10px;border-radius:6px;font-family:sans-serif}
+  </style>
+</head>
+<body>
+  <canvas id="previewCanvas"></canvas>
+  <div id="status">Waiting for avatar...</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2/dist/three-vrm.min.js"></script>
+  <script>window.dispatchEvent(new CustomEvent('threejs-ready'));</script>
+  <script src="preview.js"></script>
+</body>
+</html>

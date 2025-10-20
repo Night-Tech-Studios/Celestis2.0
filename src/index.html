@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Celestis AI Avatar</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <h1>Celestis AI Avatar</h1>
+            <div class="header-controls">
+                <button id="clearChatBtn" class="btn btn-secondary">Clear Chat</button>
+                <button id="settingsBtn" class="btn btn-secondary">Settings</button>
+                <button id="importVrmBtn" class="btn btn-primary">Import 3D Model</button>
+                <select id="internalAvatarSelect" class="btn btn-secondary" title="Internal Avatars">
+                    <option value="">Internal Avatars...</option>
+                </select>
+            </div>
+        </header>
+
+        <!-- Background Avatar Canvas -->
+        <canvas id="avatarCanvas"></canvas>
+        
+        <!-- Avatar Status -->
+        <div id="avatarStatus" class="status-indicator">Initializing...</div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Chat Interface -->
+            <div class="chat-container">
+                <div id="chatMessages" class="chat-messages"></div>
+                
+                <div class="input-container">
+                    <div class="input-controls">
+                        <button id="micBtn" class="btn btn-voice" title="Voice Input">
+                            <span class="mic-icon">🎤</span>
+                        </button>
+                        <input type="text" id="textInput" placeholder="Type your message..." class="text-input">
+                        <button id="sendBtn" class="btn btn-send">Send</button>
+                    </div>
+                    <div id="voiceStatus" class="voice-status"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Modal -->
+        <div id="settingsModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Settings</h2>
+                    <button class="close-btn" id="closeSettingsBtn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="setting-group">
+                        <label for="openrouterApiKey">OpenRouter API Key:</label>
+                        <input type="password" id="openrouterApiKey" placeholder="Enter your OpenRouter API key">
+                    </div>
+                    <div class="setting-group">
+                        <label for="aiModel">AI Model:</label>
+                        <select id="aiModel">
+                            <option value="anthropic/claude-3-haiku">Claude 3 Haiku</option>
+                            <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet</option>
+                            <option value="openai/gpt-4">GPT-4</option>
+                            <option value="openai/gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                            <option value="meta-llama/llama-2-70b-chat">Llama 2 70B</option>
+                            <option value="meta-llama/llama-4-maverick:free">Llama 4 Maverick (Free)</option>
+                        </select>
+                    </div>
+                    <div class="setting-group">
+                        <label for="rendererEngine">Renderer Engine:</label>
+                        <select id="rendererEngine">
+                            <option value="2d">2D Canvas (Default)</option>
+                        </select>
+                        <small class="setting-help">3D renderer temporarily hidden (WIP). 2D canvas is the available renderer. The 3D option remains in code for later repair.</small>
+                    </div>
+                    <div class="setting-group">
+                        <label for="voiceLanguage">Voice Recognition Language:</label>
+                        <select id="voiceLanguage">
+                            <option value="en-US">English (US)</option>
+                            <option value="en-GB">English (UK)</option>
+                            <option value="es-ES">Spanish</option>
+                            <option value="fr-FR">French</option>
+                            <option value="de-DE">German</option>
+                            <option value="ja-JP">Japanese</option>
+                        </select>
+                    </div>
+                    <div class="setting-group">
+                        <label for="initialTemplate">AI Initial Template:</label>
+                        <div class="template-presets">
+                            <small>Quick presets:</small>
+                            <button type="button" class="preset-btn" data-preset="friendly">Friendly Assistant</button>
+                            <button type="button" class="preset-btn" data-preset="professional">Professional</button>
+                            <button type="button" class="preset-btn" data-preset="creative">Creative Helper</button>
+                            <button type="button" class="preset-btn" data-preset="technical">Technical Expert</button>
+                        </div>
+                        <textarea id="initialTemplate" placeholder="Example: You are a knowledgeable AI assistant with expertise in technology. Respond in a friendly but professional manner. Keep answers concise and helpful." rows="4"></textarea>
+                        <small class="setting-help">This template sets the AI's base personality and behavior. It won't appear in chat messages but will guide all AI responses. Changes take effect immediately.</small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="saveSettingsBtn" class="btn btn-primary">Save Settings</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load Three.js r160 and VRM libraries -->
+    <script>
+        console.log('[INIT] Loading Three.js and VRM libraries...');
+    </script>
+    <script>
+        // If running inside Electron with nodeIntegration, prefer local node_modules copy first
+        (async function(){
+            try {
+                if (typeof process !== 'undefined' && process.versions && process.versions.electron && typeof require === 'function') {
+                    console.log('[INIT] Detected Electron renderer, attempting to require local three and loaders');
+                    try {
+                        // Prefer requiring by module name so resolution uses node's resolver
+                        let three;
+                        try {
+                            three = require('three');
+                        } catch (e) {
+                            // fallback to relative
+                            three = require('../node_modules/three/build/three.js');
+                        }
+
+                        if (three) {
+                            // some versions export as module default or as the namespace
+                            window.THREE = (three && three.default) ? three.default : three;
+                            console.log('[INIT] ✓ Loaded local three from node_modules');
+                        }
+
+                        // Attempt to require the UMD GLTFLoader (may attach to window.THREE)
+                        try {
+                            require('three/examples/js/loaders/GLTFLoader.js');
+                            console.log('[INIT] ✓ Required UMD GLTFLoader');
+                        } catch (e) {
+                            console.warn('[INIT] UMD GLTFLoader require failed:', e && e.message);
+                        }
+
+                        // If GLTFLoader still not present, try dynamic ESM import of the jsm loader
+                        if (!window.THREE || !window.THREE.GLTFLoader) {
+                            try {
+                                const mod = await import('three/examples/jsm/loaders/GLTFLoader.js');
+                                const GLTFLoader = mod.GLTFLoader || mod.default || mod;
+                                if (GLTFLoader) {
+                                    // Attach constructor to global THREE so existing code can use it
+                                    window.THREE = window.THREE || (require('three')?.default || require('three'));
+                                    window.THREE.GLTFLoader = GLTFLoader;
+                                    console.log('[INIT] ✓ Imported jsm GLTFLoader and attached to window.THREE');
+                                }
+                            } catch (e) {
+                                console.warn('[INIT] Dynamic import of jsm GLTFLoader failed:', e && e.message);
+                            }
+                        }
+
+                        // Try to require or import Pixiv three-vrm
+                        try {
+                            const vrmPkg = require('@pixiv/three-vrm');
+                            window.THREE_VRM = vrmPkg && (vrmPkg.default || vrmPkg);
+                            console.log('[INIT] ✓ Required @pixiv/three-vrm');
+                        } catch (e) {
+                            try {
+                                const vrmMod = await import('@pixiv/three-vrm');
+                                window.THREE_VRM = vrmMod && (vrmMod.default || vrmMod);
+                                console.log('[INIT] ✓ Imported @pixiv/three-vrm');
+                            } catch (ie) {
+                                // not fatal
+                                console.warn('[INIT] pixiv three-vrm not available locally');
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('[INIT] Failed to bootstrap local three/loaders:', e && e.message);
+                    }
+                }
+            } catch (_e) {
+                // ignore
+            }
+        })();
+    </script>
+    <!-- Three.js and three-vrm are provided by preload in Electron; CDN removed to avoid duplicate instances -->
+    <script>
+        console.log('[INIT] Checking THREE and VRM...');
+
+        function handleThreeReady() {
+            if (typeof THREE === 'undefined') {
+                console.error('[INIT] ✗ THREE not available');
+                return;
+            }
+            console.log('[INIT] ✓ THREE loaded, revision:', THREE.REVISION);
+            console.log('[INIT] ✓ THREE-VRM loaded:', !!window.THREE_VRM);
+
+            // Create a VRMLoader wrapper that prefers Pixiv's three-vrm APIs (UMD) and falls back to GLTFLoader
+            if (window.THREE_VRM) {
+                THREE.VRMLoader = class VRMLoader {
+                    constructor() {
+                        this.gltfLoader = (typeof THREE.GLTFLoader !== 'undefined') ? new THREE.GLTFLoader() : null;
+                    }
+
+                    async _convertToVRM(gltf) {
+                        if (window.THREE_VRM && window.THREE_VRM.VRM) {
+                            try {
+                                return await window.THREE_VRM.VRM.from(gltf);
+                            } catch (e) {
+                                console.warn('THREE_VRM.VRM.from failed, returning raw gltf scene:', e);
+                                return { scene: gltf.scene, animations: gltf.animations || [], humanoid: null };
+                            }
+                        }
+                        return { scene: gltf.scene, animations: gltf.animations || [], humanoid: null };
+                    }
+
+                    load(url, onLoad, onProgress, onError) {
+                        if (!this.gltfLoader) {
+                            if (onError) onError(new Error('No GLTFLoader available to load VRM'));
+                            return;
+                        }
+
+                        this.gltfLoader.load(url, async (gltf) => {
+                            try {
+                                const vrm = await this._convertToVRM(gltf);
+                                if (onLoad) onLoad(vrm);
+                            } catch (e) {
+                                console.error('VRM creation error:', e);
+                                if (onError) onError(e);
+                            }
+                        }, onProgress, onError);
+                    }
+
+                    parse(data, onLoad, onError) {
+                        if (!this.gltfLoader) {
+                            if (onError) onError(new Error('No GLTFLoader available to parse VRM data'));
+                            return;
+                        }
+
+                        this.gltfLoader.parse(data, '', async (gltf) => {
+                            try {
+                                const vrm = await this._convertToVRM(gltf);
+                                if (onLoad) onLoad(vrm);
+                            } catch (e) {
+                                console.error('VRM parse error:', e);
+                                if (onError) onError(e);
+                            }
+                        }, onError);
+                    }
+                };
+                console.log('[INIT] ✓ VRMLoader (pixiv) wrapper created');
+            }
+
+            window.__threeModulesLoaded = true;
+            window.dispatchEvent(new CustomEvent('threejs-ready'));
+        }
+
+        // Electron detection: prefer preload marker and platform exposed by preload; fall back to userAgent only if those are missing
+        const platformMarker = (typeof window !== 'undefined' && window.__platform) ? window.__platform : null;
+        const uaHasElectron = (typeof navigator !== 'undefined' && navigator.userAgent && navigator.userAgent.indexOf('Electron') !== -1);
+        const detectedElectron = !!window.__isElectron || (platformMarker !== null) || uaHasElectron;
+        console.log('[INIT] Detection -> __isElectron:', !!window.__isElectron, 'platformMarker:', platformMarker, 'userAgentElectron:', uaHasElectron, 'preloadAttachTime:', window.__preloadAttachTime || 'none');
+
+        if (detectedElectron) {
+            console.log('[INIT] Running inside Electron (detected), waiting for preload to attach modules');
+            // If preload already attached modules, handle immediately
+            if (window.__threeModulesLoaded) {
+                console.log('[INIT] Preload already attached modules (early), calling handleThreeReady now, preloadAttachTime=' + (window.__preloadAttachTime || 'na'));
+                handleThreeReady();
+            } else {
+                // Show a gentle timeout log if preload doesn't arrive quickly
+                const timeoutMs = 5000;
+                let didHandle = false;
+                const onReady = () => { didHandle = true; handleThreeReady(); };
+                window.addEventListener('threejs-ready', onReady, { once: true });
+
+                setTimeout(() => {
+                    if (!didHandle) {
+                        console.warn('[INIT] threejs-ready did not arrive within ' + timeoutMs + 'ms; continuing to wait but not treating this as a CDN failure yet');
+                    }
+                }, timeoutMs);
+            }
+        } else {
+            if (typeof THREE !== 'undefined') {
+                handleThreeReady();
+            } else {
+                console.error('[INIT] \u2717 THREE failed to load from CDN');
+            }
+        }
+    </script>
+    <!-- ESM renderer helper that configures GLTFLoader with Pixiv VRM plugins -->
+    <script type="module" src="renderer/vrmSetup.js"></script>
+
+    <script src="modules/vrmLoader.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# Ignore VRM avatar files
+*.vrm
+*.png
+*.jpg
+
+# Node modules
+node_modules/
+
+# Local settings
+settings.json
+
+# Optional: macOS and Windows artifacts
+.DS_Store
+Thumbs.db
+
+# Logs
+npm-debug.log*
+.yarn-debug.log*
+.yarn-error.log*
