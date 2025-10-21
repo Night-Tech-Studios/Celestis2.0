@@ -1,6 +1,5 @@
 # Ignore VRM avatar files
 *.vrm
-*.png
 *.jpg
 
 # Node modules
@@ -17,3 +16,5 @@ Thumbs.db
 npm-debug.log*
 .yarn-debug.log*
 .yarn-error.log*
+#package outputs
+dist/

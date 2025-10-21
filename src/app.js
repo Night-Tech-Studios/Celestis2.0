@@ -31,6 +31,8 @@ class CelestisAI {
                         voiceLanguage: 'en-US',
                         rendererEngine: 'three',
                         rendererTimeoutMs: 15000,
+                        avatarScroll: true,
+                        avatarInChat: false,
                         initialTemplate: 'You are a helpful AI assistant in a VRM avatar application. Be friendly and engaging.'
                 };
                 
@@ -182,7 +184,9 @@ class CelestisAI {
                         
                         self.setupSpeechRecognition();
                         await self.loadSettings();
-                        
+                        try { self.applyAvatarScrollSetting(); } catch(_){ }
+                        try { if (self.settings.avatarInChat) self.placeAvatarInChat(); else self.placeAvatarFloating(); } catch(_){}
+
                         debugLog('CelestisAI initialized successfully');
                 })();
         }
@@ -760,18 +764,26 @@ class CelestisAI {
                 try {
                         // convert buffer to Blob and object URL and create an Image object, but don't draw immediately
                         const blob = new Blob([buffer], { type: 'image/*' });
-                        const url = URL.createObjectURL(blob);
+                        const overlayUrl = URL.createObjectURL(blob);
 
                         const img = await new Promise((resolve, reject) => {
                                 const i = new Image();
-                                i.onload = () => { URL.revokeObjectURL(url); resolve(i); };
-                                i.onerror = (e) => { URL.revokeObjectURL(url); reject(new Error('Image load error')); };
-                                i.src = url;
+                                i.onload = () => { resolve(i); };
+                                i.onerror = (e) => { reject(new Error('Image load error')); };
+                                i.src = overlayUrl;
                         });
 
                         // Store the image for the 2D loop to render every frame
                         if (!this._2d) this._2d = { ctx: null, canvas: document.getElementById('avatarCanvas'), t: 0 };
                         this._2d.image = img;
+
+                        // Display the foreground overlay image (keeps the overlay URL until replaced)
+                        try {
+                                this.updateAvatarOverlay(overlayUrl);
+                        } catch (e) {
+                                debugLog('Failed to update avatar overlay: ' + (e?.message || e));
+                        }
+
                         this.updateAvatarStatus('2D Image Loaded: ' + (filePath || 'Image'));
                         debugLog('2D image buffered for drawing: ' + (filePath || 'image'));
                         return true;
@@ -800,6 +812,15 @@ class CelestisAI {
 
                         const buffer = await ipc.invoke('read-internal-avatar', found.name);
                         await this.load2DFromBuffer(buffer, found.name);
+                        // Also ensure the foreground overlay is shown for the default avatar
+                        try {
+                                // create object URL for overlay (load2DFromBuffer already created and stored a URL), but we ensure overlay shows
+                                const blob = new Blob([buffer], { type: 'image/*' });
+                                const overlayUrl = URL.createObjectURL(blob);
+                                this.updateAvatarOverlay(overlayUrl);
+                        } catch (e) {
+                                debugLog('Could not set overlay for default avatar: ' + (e?.message || e));
+                        }
                         debugLog('Default 2D avatar loaded: ' + found.name);
                 } catch (e) {
                         debugLog('No default 2D avatar found or failed to load: ' + (e?.message || e));
@@ -861,6 +882,8 @@ class CelestisAI {
                         }
                 } catch (e) { debugLog('[_handleLoadedVRM] Warning setting scene metadata: ' + (e?.message || e)); }
 
+                // When a 3D VRM is loaded, hide the 2D overlay so the 3D model is visible
+                try { this.updateAvatarOverlay(null); } catch(_) {}
                 this.scene.add(scene);
                 debugLog('[_handleLoadedVRM] Added VRM scene to Three.js scene');
                 
@@ -875,6 +898,92 @@ class CelestisAI {
                 const fileName = (typeof filePath === 'string' ? filePath.split(/[\\\/]/).pop() : 'Avatar') || 'Avatar';
                 this.updateAvatarStatus('VRM Avatar Loaded: ' + fileName + ' (' + totalVertices + ' vertices)');
                 debugLog('[_handleLoadedVRM] VRM loading completed successfully');
+        }
+
+        // Manage the foreground avatar overlay image element
+        updateAvatarOverlay(urlOrNull) {
+                try {
+                        const overlay = document.getElementById('avatarOverlay');
+                        const overlayImg = document.getElementById('avatarOverlayImg');
+                        if (!overlay || !overlayImg) return;
+
+                        // Revoke previous URL if replaced
+                        if (this._currentOverlayURL && this._currentOverlayURL !== urlOrNull) {
+                                try { URL.revokeObjectURL(this._currentOverlayURL); } catch (_) {}
+                                this._currentOverlayURL = null;
+                        }
+
+                        if (!urlOrNull) {
+                                overlayImg.src = '';
+                                overlay.style.display = 'none';
+                                // ensure it's in floating mode by default
+                                overlay.classList.remove('in-chat');
+                                return;
+                        }
+
+                        overlayImg.src = urlOrNull;
+                        overlay.style.display = 'flex';
+                        this._currentOverlayURL = urlOrNull;
+                } catch (e) {
+                        debugLog('updateAvatarOverlay error: ' + (e?.message || e));
+                }
+        }
+
+        // Place the overlay inside the chat container and auto-size to fit
+        placeAvatarInChat() {
+                try {
+                        const overlay = document.getElementById('avatarOverlay');
+                        const chat = document.querySelector('.chat-container');
+                        if (!overlay || !chat) return;
+
+                        // Add in-chat class to switch styling
+                        overlay.classList.add('in-chat');
+
+                        // Ensure overlay is a child of chat for absolute positioning
+                        if (overlay.parentElement !== chat) {
+                                chat.appendChild(overlay);
+                        }
+
+                        // Auto-size overlay based on chat height
+                        const resize = () => {
+                                try {
+                                        const chatRect = chat.getBoundingClientRect();
+                                        const targetHeight = Math.min(chatRect.height * 0.85, 720);
+                                        overlay.style.height = `${targetHeight}px`;
+                                } catch (e) { /* ignore */ }
+                        };
+
+                        // store handler to allow removal later
+                        this._avatarChatResizeHandler = resize;
+                        window.addEventListener('resize', resize);
+                        resize();
+                } catch (e) {
+                        debugLog('placeAvatarInChat error: ' + (e?.message || e));
+                }
+        }
+
+        // Return overlay to floating right-side mode
+        placeAvatarFloating() {
+                try {
+                        const overlay = document.getElementById('avatarOverlay');
+                        const app = document.getElementById('app') || document.body;
+                        if (!overlay) return;
+
+                        overlay.classList.remove('in-chat');
+                        if (this._avatarChatResizeHandler) {
+                                window.removeEventListener('resize', this._avatarChatResizeHandler);
+                                this._avatarChatResizeHandler = null;
+                        }
+
+                        // move back to body/app root to float
+                        if (overlay.parentElement !== app) {
+                                app.appendChild(overlay);
+                        }
+
+                        overlay.style.height = '';
+                } catch (e) {
+                        debugLog('placeAvatarFloating error: ' + (e?.message || e));
+                }
         }
 
         loadIdleAnimation(vrm) {
@@ -1095,17 +1204,52 @@ class CelestisAI {
 
                                 // Position the model so its base sits on y=0 and centered
                                 scene.position.y = -bottomY;
+                                // center on y, but we'll nudge to the right to avoid covering UI
                                 scene.position.x = -scaledCenter.x;
                                 scene.position.z = -scaledCenter.z;
 
                                 const maxDimension = Math.max(scaledBox.getSize(new THREE.Vector3()).toArray());
                                 // Ensure camera distance is reasonable
-                                const camDistance = Math.min(Math.max(maxDimension * 2.5, 1.5), 20);
-                                this.camera.position.set(camDistance, Math.max(1.2, maxDimension * 0.6), camDistance);
-                                this.camera.lookAt(0, Math.max(0.8, scaledBox.getSize(new THREE.Vector3()).y * 0.5), 0);
 
-                                // small nudge to avoid clipping
-                                scene.position.x += Math.max(0, maxDimension * 0.1);
+
+                                // Compute a bounding sphere for the scaled model and choose a camera distance
+                                const sphere = new THREE.Sphere();
+                                scaledBox.getBoundingSphere(sphere);
+                                const radius = sphere.radius || (maxDimension * 0.5);
+
+                                // Field of view in radians (vertical fov)
+                                const fovRad = THREE.Math.degToRad(this.camera.fov || 50);
+                                // Minimum distance so the bounding sphere fits vertically: r <= d * sin(fov/2)
+                                const minDistance = radius / Math.max(Math.sin(fovRad / 2), 0.0001);
+                                // Apply a margin so model doesn't touch the edges
+                                const margin = 1.15;
+                                let desiredDistance = minDistance * margin;
+
+                                // Clamp desired distance so camera doesn't go too close or too far
+                                const minClamp = Math.max(1.2, maxDimension * 0.6);
+                                const maxClamp = Math.max(10, maxDimension * 6, desiredDistance);
+                                desiredDistance = Math.min(Math.max(desiredDistance, minClamp), maxClamp);
+
+                                // Nudge the avatar to the right side of the screen so it doesn't overlap UI elements
+                                const rightNudge = Math.min(Math.max(maxDimension * 0.45, desiredDistance * 0.28), maxDimension * 1.2);
+                                scene.position.x += rightNudge;
+
+                                // Position camera so it frames the model at the right side
+                                this.camera.position.set(desiredDistance + rightNudge, Math.max(1.2, maxDimension * 0.6), desiredDistance);
+                                // Look at the model's center (respecting the x nudge)
+                                const lookY = Math.max(0.8, scaledBox.getSize(new THREE.Vector3()).y * 0.5);
+                                this.camera.lookAt(scene.position.x, lookY, 0);
+
+                                // ensure we re-compute positioning on window resize so scale/offset adapt
+                                try {
+                                        if (this._positionResizeHandler) {
+                                                window.removeEventListener('resize', this._positionResizeHandler);
+                                        }
+                                } catch (_) {}
+                                this._positionResizeHandler = () => {
+                                        try { this.positionVRMAvatar(scene); } catch(_){}
+                                };
+                                window.addEventListener('resize', this._positionResizeHandler);
 
                                 this.addDebugMarkers(scene);
                                 this.forceAvatarVisibility(scene);
@@ -1215,12 +1359,16 @@ class CelestisAI {
                         const voiceLanguage = document.getElementById('voiceLanguage');
                         const initialTemplate = document.getElementById('initialTemplate');
                         const rendererEngine = document.getElementById('rendererEngine');
+                        const avatarInChat = document.getElementById('avatarInChat');
+                        const avatarScroll = document.getElementById('avatarScroll');
                         
                         if (openrouterApiKey) openrouterApiKey.value = this.settings.openrouterApiKey;
                         if (aiModel) aiModel.value = this.settings.aiModel;
                         if (voiceLanguage) voiceLanguage.value = this.settings.voiceLanguage;
                         if (initialTemplate) initialTemplate.value = this.settings.initialTemplate;
                         if (rendererEngine) rendererEngine.value = this.settings.rendererEngine || 'three';
+                        if (avatarScroll) avatarScroll.checked = !!this.settings.avatarScroll;
+                        if (avatarInChat) avatarInChat.checked = !!this.settings.avatarInChat;
                         // autosave the initialTemplate when the user types
                         if (initialTemplate) {
                                 if (!this._initialTemplateAutosave) {
@@ -1239,6 +1387,21 @@ class CelestisAI {
                         }
                         
                         this.setupTemplatePresets();
+                        // wire avatarScroll toggle immediately
+                        if (avatarScroll) {
+                                avatarScroll.addEventListener('change', (e) => {
+                                        this.settings.avatarScroll = !!e.target.checked;
+                                        try { ipc.invoke('save-settings', this.settings); } catch(_){}
+                                        this.applyAvatarScrollSetting();
+                                });
+                        }
+                        if (avatarInChat) {
+                                avatarInChat.addEventListener('change', (e) => {
+                                        this.settings.avatarInChat = !!e.target.checked;
+                                        try { ipc.invoke('save-settings', this.settings); } catch(_){}
+                                        if (this.settings.avatarInChat) this.placeAvatarInChat(); else this.placeAvatarFloating();
+                                });
+                        }
                 } else {
                         debugLog('ERROR: Settings modal not found!');
                 }
@@ -1265,7 +1428,11 @@ class CelestisAI {
                 if (voiceLanguage) this.settings.voiceLanguage = voiceLanguage.value;
                 if (initialTemplate) this.settings.initialTemplate = initialTemplate.value;
                 const rendererEngine = document.getElementById('rendererEngine');
+                const avatarScroll = document.getElementById('avatarScroll');
+                const avatarInChat = document.getElementById('avatarInChat');
                 if (rendererEngine) this.settings.rendererEngine = rendererEngine.value;
+                if (avatarScroll) this.settings.avatarScroll = !!avatarScroll.checked;
+                if (avatarInChat) this.settings.avatarInChat = !!avatarInChat.checked;
 
                 if (this.recognition) {
                         this.recognition.lang = this.settings.voiceLanguage;
@@ -1275,11 +1442,64 @@ class CelestisAI {
                         await ipc.invoke('save-settings', this.settings);
                         this.closeSettings();
                         this.addMessage('Settings saved successfully!', 'system');
+                        this.applyAvatarScrollSetting();
+                        // apply avatar chat placement immediately
+                        try { if (this.settings.avatarInChat) this.placeAvatarInChat(); else this.placeAvatarFloating(); } catch(_){}
                         debugLog('Settings saved successfully');
                 } catch (error) {
                         debugLog('ERROR saving settings: ' + error.message);
                         this.addMessage('Error saving settings', 'system');
                 }
+        }
+
+        // Apply or remove the avatar scroll/parallax behavior based on settings.avatarScroll
+        applyAvatarScrollSetting() {
+                try {
+                        const enabled = !!this.settings.avatarScroll;
+                        if (enabled) {
+                                this.enableAvatarScroll();
+                        } else {
+                                this.disableAvatarScroll();
+                        }
+                } catch (e) {
+                        debugLog('applyAvatarScrollSetting error: ' + (e?.message || e));
+                }
+        }
+
+        enableAvatarScroll() {
+                if (this._avatarScrollEnabled) return;
+                this._avatarScrollEnabled = true;
+                const overlay = document.getElementById('avatarOverlay');
+                if (!overlay) return;
+
+                // Parallax handler: move overlay slightly based on window scrollY and chat scroll
+                this._avatarScrollHandler = () => {
+                        try {
+                                const maxShift = Math.min(window.innerHeight * 0.08, 120); // cap shift
+                                const y = window.scrollY || document.documentElement.scrollTop || 0;
+                                // compute normalized scroll (0..1) across document height
+                                const docHeight = Math.max(document.body.scrollHeight - window.innerHeight, 1);
+                                const t = Math.min(Math.max(y / docHeight, 0), 1);
+                                const shift = (t - 0.5) * maxShift * 0.9; // center at mid scroll
+                                // overlay is centered with translateY(-50%), so add shift on top
+                                overlay.style.transform = `translateY(calc(-50% + ${shift}px))`;
+                        } catch (e) { /* ignore */ }
+                };
+
+                window.addEventListener('scroll', this._avatarScrollHandler, { passive: true });
+                // also call once to set initial position
+                this._avatarScrollHandler();
+        }
+
+        disableAvatarScroll() {
+                if (!this._avatarScrollEnabled) return;
+                this._avatarScrollEnabled = false;
+                try {
+                        window.removeEventListener('scroll', this._avatarScrollHandler);
+                } catch (_) {}
+                this._avatarScrollHandler = null;
+                const overlay = document.getElementById('avatarOverlay');
+                if (overlay) overlay.style.transform = 'translateY(0)';
         }
 
         async loadSettings() {

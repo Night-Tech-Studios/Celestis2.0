@@ -23,6 +23,11 @@
 
         <!-- Background Avatar Canvas -->
         <canvas id="avatarCanvas"></canvas>
+        <!-- Foreground Avatar Overlay (2D image) -->
+        <div id="avatarOverlay" class="avatar-overlay" aria-hidden="true">
+            <img id="avatarOverlayImg" alt="Avatar" src="" />
+            <div class="avatar-shadow"></div>
+        </div>
         
         <!-- Avatar Status -->
         <div id="avatarStatus" class="status-indicator">Initializing...</div>
@@ -75,6 +80,20 @@
                             <option value="2d">2D Canvas (Default)</option>
                         </select>
                         <small class="setting-help">3D renderer temporarily hidden (WIP). 2D canvas is the available renderer. The 3D option remains in code for later repair.</small>
+                    </div>
+                    <div class="setting-group">
+                        <label for="avatarScroll">Avatar Scrolling</label>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                            <input type="checkbox" id="avatarScroll" />
+                            <small class="setting-help" style="margin:0">Enable subtle avatar movement when the window or chat scrolls (parallax)</small>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <label for="avatarInChat">Avatar in Chat</label>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                            <input type="checkbox" id="avatarInChat" />
+                            <small class="setting-help" style="margin:0">Place avatar inside the chat area and auto-resize to the chat box</small>
+                        </div>
                     </div>
                     <div class="setting-group">
                         <label for="voiceLanguage">Voice Recognition Language:</label>
