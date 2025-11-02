@@ -6,6 +6,57 @@ let renderer, scene, camera, clock, mixer, currentModel;
 const canvas = document.getElementById('previewCanvas');
 const statusEl = document.getElementById('status');
 
+// Helper: import three.module.js by URL (avoids bare specifier import('three'))
+async function importThreeByUrl() {
+  try {
+    if (typeof window !== 'undefined' && window.THREE) return window.THREE;
+    const threeUrl = new URL('../node_modules/three/build/three.module.js', import.meta.url).href;
+    const mod = await import(threeUrl);
+    const three = (mod && (mod.default || mod));
+    if (three) {
+      window.THREE = three;
+      return three;
+    }
+    return null;
+  } catch (e) {
+    console.warn('[preview] importThreeByUrl failed:', e && e.message);
+    return null;
+  }
+}
+
+// Helper: fetch a jsm loader source, rewrite its imports from 'three' to a blob URL
+// that contains three.module.js, then dynamic-import the rewritten module blob.
+async function importJsmLoaderByPath(loaderRelPath) {
+  try {
+    const threeUrl = new URL('../node_modules/three/build/three.module.js', import.meta.url).href;
+    const loaderUrl = new URL(loaderRelPath, import.meta.url).href;
+
+    const [threeRes, loaderRes] = await Promise.all([fetch(threeUrl), fetch(loaderUrl)]);
+    if (!threeRes.ok || !loaderRes.ok) {
+      console.warn('[preview] importJsmLoaderByPath: fetch failed', threeRes.status, loaderRes.status);
+      return null;
+    }
+
+    const threeSrc = await threeRes.text();
+    const loaderSrc = await loaderRes.text();
+
+    const threeBlobUrl = URL.createObjectURL(new Blob([threeSrc], { type: 'text/javascript' }));
+    const rewritten = loaderSrc.replace(/from\s+['"]three['"]/g, `from '${threeBlobUrl}'`);
+    const loaderBlobUrl = URL.createObjectURL(new Blob([rewritten], { type: 'text/javascript' }));
+
+    try {
+      const mod = await import(loaderBlobUrl);
+      return mod;
+    } finally {
+      try { URL.revokeObjectURL(loaderBlobUrl); } catch(_){}
+      try { URL.revokeObjectURL(threeBlobUrl); } catch(_){}
+    }
+  } catch (e) {
+    console.warn('[preview] importJsmLoaderByPath failed:', e && e.message);
+    return null;
+  }
+}
+
 function debug(msg){
   console.log('[preview]', msg);
   if (statusEl) statusEl.textContent = msg;
@@ -107,21 +158,45 @@ async function loadVRMFromBuffer(buffer, fileName){
       }
     }
 
-    // Ensure GLTFLoader exists: try multiple strategies
+    // Ensure GLTFLoader exists: try multiple strategies (avoid bare-specifier imports)
     if (!THREE.GLTFLoader) {
-      debug('GLTFLoader not present on window.THREE, attempting to import jsm loader');
+      debug('GLTFLoader not present on window.THREE, attempting to import jsm loader safely');
       try {
-        // dynamic import of the jsm GLTFLoader
-        const mod = await import('three/examples/jsm/loaders/GLTFLoader.js');
-        const GLTFLoader = mod.GLTFLoader || mod.default || mod;
-        if (GLTFLoader) {
-          // Attach to THREE for compatibility with existing code
-          window.THREE = window.THREE || (await import('three')).THREE || (await import('three')).default || (await import('three'));
+        let mod = null;
+
+        // 1) Prefer loader sources exposed by preload (window.celestis) if available
+        try {
+          if (window.celestis && window.celestis.loaderJsm && window.celestis.loaderJsm.gltf && window.celestis.threeModuleSource) {
+            try {
+              const threeSrc = window.celestis.threeModuleSource;
+              const loaderSrc = window.celestis.loaderJsm.gltf;
+              const threeBlob = URL.createObjectURL(new Blob([threeSrc], { type: 'text/javascript' }));
+              const rewritten = loaderSrc.replace(/from\s+['"]three['"]/g, `from '${threeBlob}'`);
+              const loaderBlob = URL.createObjectURL(new Blob([rewritten], { type: 'text/javascript' }));
+              mod = await import(loaderBlob);
+              try { URL.revokeObjectURL(loaderBlob); } catch(_){}
+              try { URL.revokeObjectURL(threeBlob); } catch(_){}
+            } catch (e) {
+              mod = null;
+            }
+          }
+        } catch (_) { mod = null; }
+
+        // 2) Try fetching and rewriting the jsm from node_modules
+        if (!mod) {
+          mod = await importJsmLoaderByPath('../node_modules/three/examples/jsm/loaders/GLTFLoader.js');
+        }
+
+        // 3) If we have a module, attach its constructor
+        if (mod) {
+          const GLTFLoader = mod.GLTFLoader || mod.default || mod;
+          if (!window.THREE) await importThreeByUrl();
+          window.THREE = window.THREE || (window.THREE);
           window.THREE.GLTFLoader = GLTFLoader;
           debug('Imported jsm GLTFLoader and attached to window.THREE');
         }
       } catch (e) {
-        debug('Dynamic import of GLTFLoader failed: ' + (e?.message||e));
+        debug('Safe import of GLTFLoader failed: ' + (e?.message||e));
       }
     }
 
@@ -253,13 +328,39 @@ ipc.on('vrm-selected', async (_e, filePath)=>{
 // When an internal avatar is selected, main sends read-internal-avatar flow; preview can listen for a custom message
 ipc.on('preview-load-buffer', async (_e, buffer, name)=>{
   try{
-    const pref = await getRendererPreference();
-    if (pref === '2d') {
+    // If the payload looks like an image (by filename extension or magic bytes), prefer 2D drawing
+    const imageExts = ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
+    const nameLower = (name || '').toLowerCase();
+    const isImageByName = imageExts.some(ext => nameLower.endsWith(ext));
+
+    // helper to examine magic bytes
+    const bytes = (buffer instanceof ArrayBuffer) ? new Uint8Array(buffer) : (buffer && buffer.buffer ? new Uint8Array(buffer.buffer || buffer) : new Uint8Array(buffer));
+    const isPng = bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47;
+    const isJpeg = bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xD8;
+    const isGif = bytes.length >= 3 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46; // 'GIF'
+    const isWebp = bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && // 'RIFF'
+                   bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50; // 'WEBP'
+
+    const isImage = isImageByName || isPng || isJpeg || isGif || isWebp;
+
+    if (isImage) {
       drawImageToPreviewCanvas(buffer, name);
       return;
     }
+
+    const pref = await getRendererPreference();
+    if (pref === '2d') {
+      // fallback: if settings prefer 2D but we didn't detect an image, still try image draw
+      try {
+        drawImageToPreviewCanvas(buffer, name);
+        return;
+      } catch (_) {
+        // fall through to 3D loader
+      }
+    }
+
     // buffer arrives as ArrayBuffer-like; ensure it's a Uint8Array
-    const arr = (buffer instanceof ArrayBuffer) ? new Uint8Array(buffer) : (buffer && buffer.buffer ? new Uint8Array(buffer.buffer || buffer) : new Uint8Array(buffer));
+    const arr = bytes;
     await loadVRMFromBuffer(arr, name);
   }catch(e){ debug('preview-load-buffer failed: ' + (e?.message||e)); }
 });
@@ -278,10 +379,13 @@ ipc.on('open-preview', ()=>{
       debug('Preview starting in 2D mode');
       // nothing else needed; preview will render images when requested
     } else {
+      // Ensure THREE is available (try safe import by URL) before initializing
+      try { await importThreeByUrl(); } catch(_){}
       initThree();
     }
   }catch(e){
     debug('Error initializing preview: ' + (e?.message||e));
+    try { await importThreeByUrl(); } catch(_){}
     initThree();
   }
   debug('Preview ready');

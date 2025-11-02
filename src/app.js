@@ -30,7 +30,8 @@ class CelestisAI {
                         aiModel: 'meta-llama/llama-4-maverick:free',
                         voiceLanguage: 'en-US',
                         rendererEngine: 'three',
-                        rendererTimeoutMs: 15000,
+                        // Increase default timeout to allow slower environments to initialize Three.js
+                        rendererTimeoutMs: 30000,
                         avatarScroll: true,
                         avatarInChat: false,
                         initialTemplate: 'You are a helpful AI assistant in a VRM avatar application. Be friendly and engaging.'
@@ -89,6 +90,7 @@ class CelestisAI {
                 const self = this;
                 return new Promise((resolve, reject) => {
                         self.updateAvatarStatus('Initializing 3D engine...');
+                        try { self.logThreeDiagnostics('start'); } catch (_) {}
 
                         const timeoutMs = (self.settings && typeof self.settings.rendererTimeoutMs === 'number') ? self.settings.rendererTimeoutMs : 15000;
 
@@ -100,12 +102,10 @@ class CelestisAI {
                         }
 
                         let settled = false;
-                        let timeoutId = null;
 
                         const cleanup = () => {
                                 try { window.removeEventListener('threejs-ready', onReady); } catch (_) {}
                                 try { clearInterval(pollId); } catch (_) {}
-                                try { if (timeoutId) clearTimeout(timeoutId); } catch (_) {}
                         };
 
                         const onReady = () => {
@@ -117,6 +117,37 @@ class CelestisAI {
 
                         window.addEventListener('threejs-ready', onReady, { once: true });
 
+                        // If preload exposed UMD sources, attempt to inject them immediately to attach global THREE
+                        try {
+                                if (typeof self.attemptInjectPreloadUmd === 'function') {
+                                        self.attemptInjectPreloadUmd();
+                                }
+                        } catch (e) {
+                                debugLog('attemptInjectPreloadUmd error: ' + (e?.message || e));
+                        }
+
+                        // If still no THREE, attempt a dynamic import inside the renderer process
+                        try {
+                                if (typeof THREE === 'undefined' && typeof self.attemptDynamicImportRenderer === 'function') {
+                                        // fire-and-forget; it will dispatch 'threejs-ready' if successful
+                                        self.attemptDynamicImportRenderer().catch(err => debugLog('attemptDynamicImportRenderer error: ' + (err?.message || err)));
+                                }
+                        } catch (e) {
+                                debugLog('attemptDynamicImportRenderer invocation error: ' + (e?.message || e));
+                        }
+
+                        // Also attempt the local module injection fallback (three-modules.js) which imports
+                        // from ../node_modules and attaches a global THREE. This helps when bare imports
+                        // cannot be resolved in the renderer context.
+                        try {
+                                if (typeof THREE === 'undefined' && typeof self.attemptInjectLocalThreeModule === 'function') {
+                                        const ok = self.attemptInjectLocalThreeModule();
+                                        debugLog('attemptInjectLocalThreeModule invoked: ' + !!ok);
+                                }
+                        } catch (e) {
+                                debugLog('attemptInjectLocalThreeModule invocation error: ' + (e?.message || e));
+                        }
+
                         // Poll for THREE availability as well in case event was missed
                         const pollId = setInterval(() => {
                                 if (moduleReady()) {
@@ -124,14 +155,40 @@ class CelestisAI {
                                 }
                         }, 150);
 
-                        // Timeout path - reject so caller can decide fallback
-                        timeoutId = setTimeout(() => {
-                                if (settled) return;
-                                settled = true;
-                                cleanup();
-                                reject(new Error('Timeout waiting for THREE/Loaders'));
-                        }, timeoutMs);
+                        // No timeout: wait indefinitely for THREE to become available.
+                        // We still attempt fallbacks (preload injection, dynamic import, local module injection)
+                        // and poll for readiness; when ready the 'threejs-ready' event or poll will resolve.
                 });
+        }
+
+        // Console diagnostic helper for Three.js initialization troubleshooting
+        logThreeDiagnostics(stage) {
+                try {
+                        const diag = {
+                                stage: stage || 'unknown',
+                                time: new Date().toISOString(),
+                                settingsRendererEngine: this.settings && this.settings.rendererEngine,
+                                settingsTimeoutMs: this.settings && this.settings.rendererTimeoutMs,
+                                global_THREE_defined: (typeof THREE !== 'undefined'),
+                                global_THREE_version: (typeof THREE !== 'undefined' && THREE.REVISION) ? THREE.REVISION : (typeof THREE !== 'undefined' && THREE?.version) ? THREE.version : null,
+                                has_WebGLRenderer: (typeof THREE !== 'undefined' && !!THREE.WebGLRenderer),
+                                window_celestis_present: typeof window.celestis === 'object',
+                                celestis_has_threeUMD: !!(window.celestis && window.celestis.__threeUmd),
+                                celestis_has_gltfUMD: !!(window.celestis && window.celestis.__gltfUmd),
+                                document_has_avatarCanvas: !!document.getElementById('avatarCanvas'),
+                                userAgent: navigator.userAgent
+                        };
+
+                        console.groupCollapsed('Three.js Diagnostics: ' + (stage || 'status'));
+                        console.log('Three.js diagnostic object:', diag);
+                        // Also forward via debugLog so main receives the info when possible
+                        try { debugLog('[ThreeDiag] ' + JSON.stringify(diag)); } catch (_) {}
+                        console.groupEnd();
+                        return diag;
+                } catch (e) {
+                        try { debugLog('logThreeDiagnostics failed: ' + (e?.message || e)); } catch (_) {}
+                        return null;
+                }
         }
 
         init() {
@@ -144,13 +201,13 @@ class CelestisAI {
                         self.loadInternalAvatars();
                         
                         // Choose renderer based on settings: 'three' or '2d'
-                        // Renderer selection is locked to 2D for now.
-                        // 3D support remains in the codebase as WIP for future repair. Do not remove.
-                        /* WIP: Three.js 3D renderer setup (disabled)
+                        // We attempt to initialize Three.js safely when requested, but fall
+                        // back to the 2D canvas renderer on errors or timeouts.
                         const engine = (self.settings && self.settings.rendererEngine) ? self.settings.rendererEngine : 'three';
                         debugLog('Selected renderer engine: ' + engine);
-                        if (engine === 'three' && typeof THREE !== 'undefined') {
-                                debugLog('Three.js is available, setting up 3D engine');
+
+                        if (engine === 'three' && (typeof THREE !== 'undefined' && THREE.WebGLRenderer)) {
+                                debugLog('Three.js is available, attempting to set up 3D engine');
                                 self.updateAvatarStatus('Setting up 3D engine...');
                                 try {
                                         self.clock = new THREE.Clock();
@@ -158,8 +215,18 @@ class CelestisAI {
                                         self.animate();
                                         self.updateAvatarStatus('3D engine ready - Import VRM to load avatar');
                                 } catch (error) {
-                                        debugLog('Error setting up Three.js: ' + error.message);
+                                        debugLog('Error setting up Three.js: ' + (error?.message || error));
                                         self.updateAvatarStatus('3D engine error - using fallback mode');
+                                        try { self.setupFallbackDisplay(); } catch (_) {}
+                                }
+                        } else if (engine === 'three') {
+                                // Renderer is set to 'three' but THREE is not yet available. Fall back to 2D
+                                debugLog('Renderer set to three but THREE is not available yet - falling back to 2D for now');
+                                try {
+                                        self.setup2DEngine();
+                                        self.updateAvatarStatus('2D engine ready');
+                                } catch (error) {
+                                        debugLog('Error setting up 2D engine: ' + (error?.message || error));
                                         self.setupFallbackDisplay();
                                 }
                         } else {
@@ -170,17 +237,11 @@ class CelestisAI {
                                         self.setup2DEngine();
                                         self.updateAvatarStatus('2D engine ready');
                                 } catch (error) {
-                                        debugLog('Error setting up 2D engine: ' + error.message);
+                                        debugLog('Error setting up 2D engine: ' + (error?.message || error));
                                         self.updateAvatarStatus('2D engine error - using fallback mode');
                                         self.setupFallbackDisplay();
                                 }
                         }
-                        */
-
-                        // Enforce 2D engine for now
-                        debugLog('Enforcing 2D canvas renderer (3D is WIP)');
-                        self.updateAvatarStatus('Setting up 2D engine...');
-                        try { self.setup2DEngine(); self.updateAvatarStatus('2D engine ready'); } catch(e){ debugLog('2D setup failed: '+(e?.message||e)); self.setupFallbackDisplay(); }
                         
                         self.setupSpeechRecognition();
                         await self.loadSettings();
@@ -285,6 +346,97 @@ class CelestisAI {
                 });
 
                 debugLog('Three.js setup completed successfully');
+        }
+
+        // If preload exposed UMD sources (for packaged builds), inject them into the document
+        attemptInjectPreloadUmd() {
+                try {
+                        if (typeof window.celestis !== 'object') return false;
+                        const cel = window.celestis;
+                        // If THREE global already present, nothing to do
+                        if (typeof THREE !== 'undefined') return true;
+
+                        if (cel.__threeUmd) {
+                                debugLog('Injecting preload-provided Three.js UMD into renderer');
+                                const s = document.createElement('script');
+                                s.type = 'text/javascript';
+                                s.text = cel.__threeUmd;
+                                document.head.appendChild(s);
+                        }
+
+                        if (cel.__gltfUmd) {
+                                debugLog('Injecting preload-provided GLTFLoader UMD into renderer');
+                                const s2 = document.createElement('script');
+                                s2.type = 'text/javascript';
+                                s2.text = cel.__gltfUmd;
+                                document.head.appendChild(s2);
+                        }
+
+                        return (typeof THREE !== 'undefined');
+                } catch (e) {
+                        debugLog('attemptInjectPreloadUmd failed: ' + (e?.message || e));
+                        return false;
+                }
+        }
+
+        // Try dynamic import('three') from renderer context. If successful, dispatch a window event.
+        async attemptDynamicImportRenderer() {
+                try {
+                        debugLog('Attempting safe dynamic import: prefer local three.module.js or project three-modules helper');
+
+                        // First, try to import the local three.module.js directly (resolved relative to current document)
+                        try {
+                                const localThreeUrl = new URL('../node_modules/three/build/three.module.js', window.location.href).href;
+                                debugLog('Attempting dynamic import of local three.module.js at ' + localThreeUrl);
+                                const mod = await import(localThreeUrl);
+                                if (mod) {
+                                        if (typeof window !== 'undefined' && !window.THREE) window.THREE = mod;
+                                        window.__threeModulesLoaded = true;
+                                        try { window.dispatchEvent(new Event('threejs-ready')); } catch (_) {}
+                                        debugLog('Dynamic import of local three.module.js succeeded and dispatched threejs-ready');
+                                        return true;
+                                }
+                        } catch (innerErr) {
+                                debugLog('Importing local three.module.js failed: ' + (innerErr?.message || innerErr));
+                        }
+
+                        // Fall back to importing the project's `three-modules.js` helper module which attaches THREE when executed
+                        try {
+                                const helperUrl = new URL('three-modules.js', window.location.href).href;
+                                debugLog('Attempting dynamic import of project helper at ' + helperUrl);
+                                await import(helperUrl);
+                                // three-modules.js should attach window.THREE and dispatch threejs-ready
+                                debugLog('Dynamic import of three-modules.js completed');
+                                return true;
+                        } catch (helperErr) {
+                                debugLog('Importing three-modules.js helper failed: ' + (helperErr?.message || helperErr));
+                                throw helperErr;
+                        }
+
+                } catch (e) {
+                        debugLog('Dynamic import attempts failed: ' + (e?.message || e));
+                        throw e;
+                }
+        }
+
+        // As a last resort in the renderer, inject a local module script that imports three from node_modules
+        // This file (`three-modules.js`) already exists in the project and attaches THREE to window when loaded.
+        attemptInjectLocalThreeModule() {
+                try {
+                        if (typeof THREE !== 'undefined') return true;
+                        debugLog('Attempting to inject local three-modules.js as a module script fallback');
+                        const s = document.createElement('script');
+                        s.type = 'module';
+                        s.src = 'three-modules.js';
+                        s.onload = () => { debugLog('three-modules.js loaded'); };
+                        s.onerror = (e) => { debugLog('Failed to load three-modules.js: ' + (e?.message || e)); };
+                        document.head.appendChild(s);
+                        // give it a moment -- the existing wait logic polls for THREE and will pick up the global
+                        return true;
+                } catch (e) {
+                        debugLog('attemptInjectLocalThreeModule failed: ' + (e?.message || e));
+                        return false;
+                }
         }
 
         // Simple 2D renderer useful as a fallback or lightweight option

@@ -14,6 +14,8 @@
             <div class="header-controls">
                 <button id="clearChatBtn" class="btn btn-secondary">Clear Chat</button>
                 <button id="settingsBtn" class="btn btn-secondary">Settings</button>
+                <button id="openPreviewBtn" class="btn btn-secondary">Open Preview</button>
+                <button id="import2dBtn" class="btn btn-secondary">Import 2D Avatar</button>
                 <button id="importVrmBtn" class="btn btn-primary">Import 3D Model</button>
                 <select id="internalAvatarSelect" class="btn btn-secondary" title="Internal Avatars">
                     <option value="">Internal Avatars...</option>
@@ -78,8 +80,9 @@
                         <label for="rendererEngine">Renderer Engine:</label>
                         <select id="rendererEngine">
                             <option value="2d">2D Canvas (Default)</option>
+                            <option value="three">3D Renderer (Three.js)</option>
                         </select>
-                        <small class="setting-help">3D renderer temporarily hidden (WIP). 2D canvas is the available renderer. The 3D option remains in code for later repair.</small>
+                        <small class="setting-help">Select the renderer engine. The 3D renderer uses Three.js and supports VRM/GLTF models when available.</small>
                     </div>
                     <div class="setting-group">
                         <label for="avatarScroll">Avatar Scrolling</label>
@@ -100,11 +103,35 @@
                         <select id="voiceLanguage">
                             <option value="en-US">English (US)</option>
                             <option value="en-GB">English (UK)</option>
+                            <option value="pt-BR">Português (Brasil)</option>
                             <option value="es-ES">Spanish</option>
                             <option value="fr-FR">French</option>
                             <option value="de-DE">German</option>
                             <option value="ja-JP">Japanese</option>
                         </select>
+                    </div>
+                    <div class="setting-group">
+                        <label for="micSelect">Microphone:</label>
+                        <select id="micSelect">
+                            <option value="">(Default system microphone)</option>
+                        </select>
+                        <small class="setting-help">Choose the input device for voice recording. Your browser/OS must grant microphone permission.</small>
+                    </div>
+                    <div class="setting-group">
+                        <label for="ttsEnabled">Text-to-Speech (TTS)</label>
+                        <div style="display:flex; flex-direction:column; gap:8px; margin-top:6px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <input type="checkbox" id="ttsEnabled" />
+                                <small class="setting-help" style="margin:0">Enable TTS for AI responses</small>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <label for="ttsVoice" style="min-width:110px;">Voice:</label>
+                                <select id="ttsVoice" style="flex:1">
+                                    <option value="">(Default browser voice)</option>
+                                </select>
+                            </div>
+                            <small class="setting-help">TTS is performed by the browser using available system voices. If no voice appears, try restarting the app or your OS.</small>
+                        </div>
                     </div>
                     <div class="setting-group">
                         <label for="initialTemplate">AI Initial Template:</label>
@@ -163,11 +190,13 @@
                         // If GLTFLoader still not present, try dynamic ESM import of the jsm loader
                         if (!window.THREE || !window.THREE.GLTFLoader) {
                             try {
-                                const mod = await import('three/examples/jsm/loaders/GLTFLoader.js');
+                                // Use an explicit file URL for the examples jsm loader so browser-like renderer resolves correctly
+                                const gltfJsmUrl = new URL('../node_modules/three/examples/jsm/loaders/GLTFLoader.js', window.location.href).href;
+                                const mod = await import(gltfJsmUrl);
                                 const GLTFLoader = mod.GLTFLoader || mod.default || mod;
                                 if (GLTFLoader) {
                                     // Attach constructor to global THREE so existing code can use it
-                                    window.THREE = window.THREE || (require('three')?.default || require('three'));
+                                    try { window.THREE = window.THREE || (require('three')?.default || require('three')); } catch(_) {}
                                     window.THREE.GLTFLoader = GLTFLoader;
                                     console.log('[INIT] ✓ Imported jsm GLTFLoader and attached to window.THREE');
                                 }
@@ -203,6 +232,61 @@
     <!-- Three.js and three-vrm are provided by preload in Electron; CDN removed to avoid duplicate instances -->
     <script>
         console.log('[INIT] Checking THREE and VRM...');
+
+        // Global error handlers to capture runtime failures and forward to main for diagnostics
+        try {
+            window.addEventListener('error', (ev) => {
+                try {
+                    console.error('[GLOBAL ERROR]', ev.error || ev.message || ev);
+                    if (window && window.electronAPI && window.electronAPI.send) {
+                        window.electronAPI.send('debug-log', '[GLOBAL ERROR] ' + (ev.error && ev.error.stack ? ev.error.stack : (ev.message || String(ev))));
+                    }
+                } catch(_){}
+            });
+
+            window.addEventListener('unhandledrejection', (ev) => {
+                try {
+                    console.error('[UNHANDLED REJECTION]', ev.reason || ev);
+                    if (window && window.electronAPI && window.electronAPI.send) {
+                        window.electronAPI.send('debug-log', '[UNHANDLED REJECTION] ' + (ev.reason && ev.reason.stack ? ev.reason.stack : String(ev.reason || ev)));
+                    }
+                } catch(_){}
+            });
+        } catch (e) { /* ignore */ }
+
+        // If preload exposed modules via `window.celestis`, use them immediately
+        try {
+            if (window.celestis && window.celestis.three) {
+                console.log('[INIT] Detected preload-provided three via window.celestis');
+                try { window.THREE = window.celestis.three; } catch(_){}
+                try { if (window.celestis.threeVrm) window.THREE_VRM = window.celestis.threeVrm; } catch(_){}
+                window.__threeModulesLoaded = true;
+                window.__preloadAttachTime = window.celestis.preloadAttachTime || Date.now();
+                window.dispatchEvent(new CustomEvent('threejs-ready'));
+            }
+        } catch (e) { /* ignore */ }
+
+        // If preload exposed UMD source strings, inject them directly (works well for packaged builds)
+        try {
+            if ((!window.THREE || !window.THREE.GLTFLoader) && window.celestis && (window.celestis.__threeUmd || window.celestis.__gltfUmd)) {
+                try {
+                    if (window.celestis.__threeUmd) {
+                        const s = document.createElement('script');
+                        s.type = 'text/javascript';
+                        s.text = window.celestis.__threeUmd;
+                        document.head.appendChild(s);
+                        console.log('[INIT] Injected preload-provided UMD three');
+                    }
+                    if (window.celestis.__gltfUmd) {
+                        const s2 = document.createElement('script');
+                        s2.type = 'text/javascript';
+                        s2.text = window.celestis.__gltfUmd;
+                        document.head.appendChild(s2);
+                        console.log('[INIT] Injected preload-provided UMD GLTFLoader');
+                    }
+                } catch (e) { console.warn('[INIT] Preload UMD injection failed:', e && e.message); }
+            }
+        } catch (e) { /* ignore */ }
 
         function handleThreeReady() {
             if (typeof THREE === 'undefined') {
@@ -301,12 +385,59 @@
             if (typeof THREE !== 'undefined') {
                 handleThreeReady();
             } else {
-                console.error('[INIT] \u2717 THREE failed to load from CDN');
+                        console.error('[INIT] \u2717 THREE failed to load from CDN');
+                        // As a fallback, try to require three from node_modules (Electron renderer may allow require)
+                        (async function tryRequireThree(){
+                            try {
+                                if (typeof require === 'function') {
+                                    console.log('[INIT] Attempting to require("three") as fallback');
+                                    const threePkg = require('three');
+                                    window.THREE = (threePkg && threePkg.default) ? threePkg.default : threePkg;
+                                    console.log('[INIT] ✓ Loaded three via require fallback');
+                                    handleThreeReady();
+                                }
+                            } catch (err) {
+                                console.warn('[INIT] require("three") fallback failed:', err && err.message);
+                                // If require failed or not available, ask main for UMD sources and inject them
+                                try {
+                                    if (window && window.electronAPI && window.electronAPI.invoke) {
+                                        console.log('[INIT] Requesting UMD three sources from main process');
+                                        const res = await window.electronAPI.invoke('get-three-umd');
+                                        if (res && (res.three || res.gltfLoader)) {
+                                            if (res.three) {
+                                                const s = document.createElement('script');
+                                                s.type = 'text/javascript';
+                                                s.text = res.three;
+                                                document.head.appendChild(s);
+                                                console.log('[INIT] Injected UMD three from main');
+                                            }
+                                            if (res.gltfLoader) {
+                                                const s2 = document.createElement('script');
+                                                s2.type = 'text/javascript';
+                                                s2.text = res.gltfLoader;
+                                                document.head.appendChild(s2);
+                                                console.log('[INIT] Injected UMD GLTFLoader from main');
+                                            }
+                                            // Allow a brief moment for globals to attach
+                                            setTimeout(() => {
+                                                if (typeof THREE !== 'undefined') {
+                                                    handleThreeReady();
+                                                } else {
+                                                    console.warn('[INIT] Injected UMD did not attach THREE');
+                                                }
+                                            }, 50);
+                                        }
+                                    }
+                                } catch (_e) { console.warn('[INIT] UMD injection attempt failed: ' + (_e && _e.message)); }
+                            }
+                        })();
             }
         }
     </script>
     <!-- ESM renderer helper that configures GLTFLoader with Pixiv VRM plugins -->
     <script type="module" src="renderer/vrmSetup.js"></script>
+    <!-- Ensure a local module-based THREE attachment is available as an early fallback -->
+    <script type="module" src="three-modules.js"></script>
 
     <script src="modules/vrmLoader.js"></script>
     <script src="app.js"></script>

@@ -1,15 +1,18 @@
 # Celestis AI Avatar
 
 A desktop AI application featuring VRM avatar support, OpenRouter API integration, and speech-to-text capabilities.
+## Version 1.0
+
+Version 1.0 got archived due to poor performance in tests and in most of machines (becouse of the lack of NPU cores) and since celestis is an project made to be in more computers then just the apple M series, snapdragon elite x series, intel core Ultra series and AMD Ai series computers or computers with newer gpus (RTX 40 and 50 Series and intel and AMD equivalents) the project was redone and rewrited in another language to use openrouter ai cloud API to be used in most of the computers
 
 ## Features
 
-- **VRM Avatar Support**: Import and display VRM files as 3D avatars
+- **VRM Avatar Support**: Import and display VRM files as 3D avatars (WIP)
 - **OpenRouter API Integration**: Connect to various AI models (Claude, GPT-4, Llama, etc.)
 - **Speech-to-Text**: Voice input with multiple language support
 - **Text Input**: Traditional text-based chat interface
 - **Desktop Application**: Built with Electron for cross-platform compatibility
-- **Real-time 3D Rendering**: Powered by Three.js and three-vrm
+- **Real-time 3D Rendering**: Powered by Three.js and three-vrm (WIP)
 
 ## Setup Instructions
 
@@ -123,7 +126,7 @@ npm run build
 
 ### File Locations
 
-- Settings: `settings.json` in the app directory
+- Settings: persistent settings are stored in the OS user data directory (e.g. on Linux: ~/.config/<app>, on Windows: %APPDATA%\<app>). During development the app will also read `settings.json` in the repository root and attempt to migrate it to the user data directory on first run.
 - VRM files: Import from anywhere on your system
 
 ## Web / Mobile WebView build

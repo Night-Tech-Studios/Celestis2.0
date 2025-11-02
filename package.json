@@ -19,7 +19,7 @@
   "author": "Celestis",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^25.0.0",
+    "electron": "^38.4.0",
     "electron-builder": "^24.0.0"
   },
   "dependencies": {

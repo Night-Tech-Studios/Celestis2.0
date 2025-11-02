@@ -1,6 +1,6 @@
 # Ignore VRM avatar files
 *.vrm
-*.jpg
+
 
 # Node modules
 node_modules/

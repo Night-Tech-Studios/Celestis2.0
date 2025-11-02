@@ -10,97 +10,219 @@ try { console.log('[preload] platform:', osPlatform || 'unknown'); } catch (e) {
 
 // Import three and loaders via node resolution. Use try/catch so missing packages don't crash preload.
 (async function(){
-  try {
-    const path = require('path');
-    const fs = require('fs');
-    const THREE = require('three');
-    let GLTFLoader = null;
+  // Gather variables to expose regardless of errors
+  let api = {
+    THREE: null,
+    GLTFLoader: null,
+    THREE_VRM: null,
+    _gltf_method: 'none',
+    preloadAttachTime: (performance && performance.now) ? performance.now() : Date.now()
+  };
 
-    // Robust strategy: avoid dynamic ESM imports (they may trigger fetch/file:// issues in some Electron setups).
-    // Prefer requiring the UMD example loader which attaches onto the global THREE object.
+  try {
+    // Use a runtime-safe require to avoid bundlers (webpack) attempting to resolve
+    // Node core modules at build time. Prefer __non_webpack_require__ when available.
+    const nativeRequire = (typeof __non_webpack_require__ === 'function') ? __non_webpack_require__ : (typeof require === 'function' ? require : null);
+    const runtimeRequire = nativeRequire || (typeof require === 'function' ? require : null);
+    let path = null;
+    let fs = null;
+    try {
+      if (runtimeRequire) {
+        try { path = runtimeRequire('path'); } catch(_) { path = null; }
+        try { fs = runtimeRequire('fs'); } catch(_) { fs = null; }
+      }
+    } catch (_e) {
+      path = null;
+      fs = null;
+    }
+    // Attempt to require three. If it fails, leave as null but continue to expose.
+    try {
+      // Prefer require first (synchronous). If that fails, attempt a dynamic import
+      try {
+        const THREE = require('three');
+        api.THREE = (THREE && THREE.default) ? THREE.default : THREE;
+      } catch (reqErr) {
+        // require may fail in some packaging/esm scenarios; try dynamic import as a fallback
+        try {
+          const imported = await import('three');
+          api.THREE = (imported && imported.default) ? imported.default : imported;
+          console.log('[preload] three loaded via dynamic import fallback');
+        } catch (impErr) {
+          api.THREE = null;
+          console.warn('[preload] three not available via require or dynamic import');
+        }
+      }
+    } catch (e) {
+      api.THREE = null;
+    }
+
+    // Additionally, attempt to read the UMD source files for three and GLTFLoader from node_modules
+    // and expose them so the renderer can inject them if module loading fails due to packaging/esm issues.
+    try {
+      // Resolve the three package root via package.json for more reliable paths
+      let threePkgJson = null;
+      try { threePkgJson = (runtimeRequire && runtimeRequire.resolve) ? runtimeRequire.resolve('three/package.json') : require.resolve('three/package.json'); } catch (_) { threePkgJson = null; }
+
+      if (threePkgJson) {
+        const threeBase = path.dirname(threePkgJson);
+
+        // Candidate files for Three.js UMD (build/three.js is canonical, but include others)
+        const threeCandidates = [
+          path.join(threeBase, 'build', 'three.js'),
+          path.join(threeBase, 'build', 'three.module.js'),
+          path.join(threeBase, 'build', 'three.min.js'),
+          path.join(threeBase, 'src', 'Three.js')
+        ];
+
+        api.__threeUmd = null;
+        for (const cand of threeCandidates) {
+          if (fs.existsSync(cand)) {
+            try { api.__threeUmd = fs.readFileSync(cand, 'utf8'); console.log('[preload] found three UMD at ' + cand); break; } catch(err) { api.__threeUmd = null; console.log('[preload] failed reading three UMD at ' + cand + ': ' + (err && err.message)); }
+          }
+        }
+
+        // Candidate paths for GLTFLoader; prefer UMD example first
+        const gltfCandidates = [
+          path.join(threeBase, 'examples', 'js', 'loaders', 'GLTFLoader.js'),
+          path.join(threeBase, 'examples', 'jsm', 'loaders', 'GLTFLoader.js'),
+          path.join(threeBase, 'examples', 'js', 'loaders', 'GLTFLoader.min.js')
+        ];
+
+        api.__gltfUmd = null;
+        for (const cand of gltfCandidates) {
+          if (fs.existsSync(cand)) {
+            try { api.__gltfUmd = fs.readFileSync(cand, 'utf8'); console.log('[preload] found GLTF loader at ' + cand); break; } catch(err) { api.__gltfUmd = null; console.log('[preload] failed reading GLTF loader at ' + cand + ': ' + (err && err.message)); }
+          }
+        }
+
+        // FBX loader support intentionally omitted; we only surface GLTF/VRM loader sources
+      } else {
+        api.__threeUmd = null;
+        api.__gltfUmd = null;
+      }
+    } catch (e) {
+      api.__threeUmd = null;
+      api.__gltfUmd = null;
+    }
+
+    // If runtimeRequire isn't available (bundled preload), ask main for UMD strings
+    try {
+      if ((!api.__threeUmd || !api.__gltfUmd) && ipcRenderer && ipcRenderer.invoke) {
+        const mainResult = await ipcRenderer.invoke('get-three-umd');
+        console.log('[preload] get-three-umd returned:', !!(mainResult && (mainResult.three || mainResult.gltf)), ' three:', !!(mainResult && mainResult.three), ' gltf:', !!(mainResult && mainResult.gltf));
+        if (mainResult && mainResult.three) api.__threeUmd = api.__threeUmd || mainResult.three;
+        if (mainResult && mainResult.gltf) api.__gltfUmd = api.__gltfUmd || mainResult.gltf;
+      }
+    } catch (e) {
+      console.log('[preload] get-three-umd invoke failed: ' + (e && e.message));
+    }
+
+    // Additionally, ask main for loader sources (jsm and examples/js) when available.
+    try {
+      if (ipcRenderer && typeof ipcRenderer.invoke === 'function') {
+        try {
+          const loaderRes = await ipcRenderer.invoke('read-loader-sources');
+          console.log('[preload] read-loader-sources returned, found=', !!(loaderRes && loaderRes.found));
+          api.__threeModule = loaderRes && loaderRes.threeModule ? loaderRes.threeModule : null;
+          api.loaderJsm = (loaderRes && loaderRes.jsm) ? loaderRes.jsm : { gltf: null };
+          api.loaderJs = (loaderRes && loaderRes.js) ? loaderRes.js : { gltf: null };
+
+          // Backwards compatibility: if classic examples/js GLTFLoader exists, expose as __gltfUmd
+          if (!api.__gltfUmd && api.loaderJs && api.loaderJs.gltf) api.__gltfUmd = api.loaderJs.gltf;
+          // Expose jsm sources separately as well
+          api.__gltfJsm = api.loaderJsm.gltf || null;
+        } catch (e) {
+          console.log('[preload] read-loader-sources invoke failed:', e && e.message);
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // Try to attach a UMD GLTFLoader if available in node_modules
     try {
       const threeMain = require.resolve('three');
       const base = path.dirname(threeMain);
       const examplesUmd = path.join(base, 'examples', 'js', 'loaders', 'GLTFLoader.js');
       if (fs.existsSync(examplesUmd)) {
-        // execute the UMD file which typically registers onto the global THREE object
-        require(examplesUmd);
-        GLTFLoader = (THREE && THREE.GLTFLoader) ? THREE.GLTFLoader : null;
-        var _gltf_method = 'umd';
-        try { console.log('[preload] GLTFLoader attached via UMD require'); } catch(_){}
+        try { require(examplesUmd); } catch(_){}
+        api.GLTFLoader = (api.THREE && api.THREE.GLTFLoader) ? api.THREE.GLTFLoader : null;
+        api._gltf_method = 'umd';
       } else {
-        // fallback: attempt to require by package subpath (may fail on newer three exports)
         try {
           const maybe = require('three/examples/jsm/loaders/GLTFLoader.js');
-          GLTFLoader = maybe && (maybe.GLTFLoader || maybe.default || maybe);
-          var _gltf_method = 'require-subpath';
-          try { console.log('[preload] GLTFLoader loaded via require subpath'); } catch(_){}
+          api.GLTFLoader = maybe && (maybe.GLTFLoader || maybe.default || maybe);
+          api._gltf_method = 'require-subpath';
         } catch (_e) {
-          GLTFLoader = (THREE && THREE.GLTFLoader) ? THREE.GLTFLoader : null;
-          var _gltf_method = (GLTFLoader ? 'attached' : 'none');
+          api.GLTFLoader = (api.THREE && api.THREE.GLTFLoader) ? api.THREE.GLTFLoader : null;
         }
       }
     } catch (err) {
-      // If anything here throws, we give up gracefully and continue without GLTFLoader
-      GLTFLoader = (THREE && THREE.GLTFLoader) ? THREE.GLTFLoader : null;
-      var _gltf_method = (GLTFLoader ? 'attached' : 'none');
+      // ignore loader resolution errors
     }
 
-    let THREE_VRM = null;
+    // Try pixiv three-vrm
     try {
-      THREE_VRM = require('@pixiv/three-vrm');
-    } catch (e) {
-      try {
-        const vrmMod = await import('@pixiv/three-vrm');
-        THREE_VRM = vrmMod && (vrmMod.default || vrmMod);
-      } catch (_e) {
-        THREE_VRM = null;
+      let THREE_VRM = null;
+      try { THREE_VRM = require('@pixiv/three-vrm'); } catch (e) { }
+      if (!THREE_VRM) {
+        try { const mod = await import('@pixiv/three-vrm'); THREE_VRM = mod && (mod.default || mod); } catch(_){}
       }
-    }
+      api.THREE_VRM = (THREE_VRM && THREE_VRM.default) ? THREE_VRM.default : THREE_VRM;
+    } catch (_) {}
 
-    // Build an API object to expose via contextBridge
-    try {
-      const api = {
-        THREE: (THREE && THREE.default) ? THREE.default : THREE,
-        GLTFLoader: GLTFLoader,
-        THREE_VRM: (THREE_VRM && THREE_VRM.default) ? THREE_VRM.default : THREE_VRM,
-        _gltf_method: _gltf_method || 'unknown',
-        preloadAttachTime: (performance && performance.now) ? performance.now() : Date.now()
-      };
-
-      // Expose helper methods and flags
-      contextBridge.exposeInMainWorld('celestis', {
-        isElectron: true,
-        platform: osPlatform,
-        three: api.THREE,
-        gltfLoader: api.GLTFLoader,
-        threeVrm: api.THREE_VRM,
-        gltfMethod: api._gltf_method,
-        preloadAttachTime: api.preloadAttachTime,
-        onThreeReady: (cb) => {
-          try {
-            window.addEventListener('threejs-ready', cb);
-          } catch (e) {
-            // No-op in preload context; instead call immediately if ready
-            try { cb(); } catch (_) {}
-          }
-        }
-      });
-
-      // Dispatch an event on document for backward compat (renderer code can still listen)
-      try {
-        const evt = new CustomEvent('threejs-ready');
-        window.dispatchEvent(evt);
-      } catch (e) {}
-
-      try {
-        console.log('[preload] attach results @' + (api.preloadAttachTime || 'na') + ' -> THREE:' + (!!api.THREE) + ' GLTFLoader:' + (!!api.GLTFLoader) + ' THREE_VRM:' + (!!api.THREE_VRM) + ' method:' + (api._gltf_method || 'unknown'));
-      } catch(_){}
-    } catch (e) {
-      // ignore
-    }
+    api.preloadAttachTime = (performance && performance.now) ? performance.now() : Date.now();
   } catch (e) {
-    // nothing to do
+    // Top-level preload error should not prevent exposing an API
+    try { console.warn('[preload] module attach warning: ' + (e && e.message)); } catch(_){}
+  }
+
+  // Always expose a minimal celestis object so renderer can detect preload existence
+  try {
+    contextBridge.exposeInMainWorld('celestis', {
+      isElectron: true,
+      platform: osPlatform,
+      three: api.THREE,
+      gltfLoader: api.GLTFLoader,
+      // Expose UMD source strings so the renderer can inject them when module resolution fails.
+      // Expose both the newer aliases and the older underscored keys for backwards compatibility
+      threeUmd: api.__threeUmd || null,
+      gltfUmd: api.__gltfUmd || null,
+      __threeUmd: api.__threeUmd || null,
+      __gltfUmd: api.__gltfUmd || null,
+      threeVrm: api.THREE_VRM,
+      gltfMethod: api._gltf_method,
+      preloadAttachTime: api.preloadAttachTime,
+      // expose raw UMD strings for debugging and fallback injection
+      __threeUmd: api.__threeUmd || null,
+      __gltfUmd: api.__gltfUmd || null,
+      // Expose jsm/js loader sources and three.module content when available
+      loaderJsm: api.loaderJsm || { gltf: null },
+      loaderJs: api.loaderJs || { gltf: null },
+      threeModuleSource: api.__threeModule || null,
+      // jsm content aliases
+      __gltfJsm: api.__gltfJsm || null,
+      onThreeReady: (cb) => {
+        try { window.addEventListener('threejs-ready', cb); } catch (e) { try { cb(); } catch(_){} }
+      }
+    });
+
+    // If three is present, set globals and dispatch event
+    try {
+      if (api.THREE) {
+        try { window.THREE = api.THREE; } catch(_){}
+        if (api.THREE_VRM) { try { window.THREE_VRM = api.THREE_VRM; } catch(_){} }
+        window.__threeModulesLoaded = true;
+        window.__preloadAttachTime = api.preloadAttachTime;
+        try { window.dispatchEvent(new CustomEvent('threejs-ready')); } catch(_){}
+      }
+    } catch (_) {}
+
+    try {
+      console.log('[preload] attach results @' + (api.preloadAttachTime || 'na') + ' -> THREE:' + (!!api.THREE) + ' GLTFLoader:' + (!!api.GLTFLoader) + ' THREE_VRM:' + (!!api.THREE_VRM) + ' method:' + (api._gltf_method || 'unknown'));
+    } catch(_){}
+  } catch (e) {
+    // ignore
   }
 })();
 

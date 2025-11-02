@@ -16,9 +16,63 @@
     } catch(_){ return true; }
   }
 
+  // FBX support removed. This loader focuses on GLTF/VRM only.
+
   async function loadVRMFromBuffer(ctx, buffer, filePath){
     const { THREE, debugLog } = ctx;
     debugLog('[vrmLoader.js] Starting loadVRMFromBuffer, buffer size: ' + buffer.length);
+
+    // Ensure GLTFLoader is available on THREE when possible by consulting preload-provided
+    // artifacts (window.celestis) or injecting UMD sources that preload exposed.
+    function ensureGlobalGLTFLoader() {
+      try {
+        if (typeof THREE !== 'undefined' && typeof THREE.GLTFLoader !== 'undefined') return true;
+        // If preload exposed a direct constructor
+        if (window.celestis && window.celestis.gltfLoader) {
+          try { THREE.GLTFLoader = window.celestis.gltfLoader; return true; } catch(_){}
+        }
+
+        // If preload exposed UMD source text, inject it so it attaches to global THREE
+        const umdSrc = (window.celestis && (window.celestis.gltfUmd || window.celestis.__gltfUmd)) ||
+                       (window.celestis && window.celestis.loaderJs && window.celestis.loaderJs.gltf) ||
+                       null;
+        if (umdSrc) {
+          try {
+            const s = document.createElement('script');
+            s.type = 'text/javascript';
+            s.text = umdSrc;
+            (document.head || document.documentElement).appendChild(s);
+            debugLog('[vrmLoader.js] Injected GLTFLoader UMD from preload');
+            return typeof THREE !== 'undefined' && typeof THREE.GLTFLoader !== 'undefined';
+          } catch (e) {
+            debugLog('[vrmLoader.js] UMD injection failed: ' + (e && e.message));
+          }
+        }
+
+        // If preload provided an ESM source (jsm) as text, attempt to create a blob module and import it
+        const jsmSrc = (window.celestis && (window.celestis.__gltfJsm || (window.celestis.loaderJsm && window.celestis.loaderJsm.gltf))) || null;
+        if (jsmSrc) {
+          try {
+            const blob = new Blob([jsmSrc], { type: 'application/javascript' });
+            const url = URL.createObjectURL(blob);
+            return import(url).then(mod => {
+              const GLTFLoader = mod.GLTFLoader || mod.default || mod;
+              if (GLTFLoader) {
+                try { THREE.GLTFLoader = GLTFLoader; } catch(_){}
+              }
+              URL.revokeObjectURL(url);
+              return typeof THREE !== 'undefined' && typeof THREE.GLTFLoader !== 'undefined';
+            }).catch(e => {
+              debugLog('[vrmLoader.js] dynamic import of jsm GLTFLoader failed: ' + (e && e.message));
+              return false;
+            });
+          } catch (e) {
+            debugLog('[vrmLoader.js] create/import blob for jsm failed: ' + (e && e.message));
+          }
+        }
+      } catch (e) { /* ignore */ }
+      return false;
+    }
 
     // Helper to convert Node Buffer / Uint8Array to ArrayBuffer for GLTFLoader.parse
     function toArrayBuffer(buf){
@@ -38,6 +92,8 @@
         throw new Error('Invalid VRM/GLTF file format');
       }
       debugLog('[vrmLoader.js] File validation passed');
+
+      // FBX handling removed — continue with GLTF/VRM loading paths
 
       // Preferred path: use Pixiv three-vrm loader utilities if available (UMD exposes window.THREE_VRM)
       if (window.THREE_VRM && (window.THREE_VRM.VRM || window.THREE_VRM.VRMLoaderPlugin)){
@@ -141,8 +197,20 @@
           }
       }
 
-      // Last-resort path: no Pixiv VRM helpers available — try GLTFLoader and return raw gltf
-      if (!THREE.GLTFLoader) {
+      // Last-resort path: no Pixiv VRM helpers available — try to ensure a GLTFLoader exists
+      // by consulting preload-provided artifacts (window.celestis) or injecting them. If
+      // ensureGlobalGLTFLoader returns a Promise (due to dynamic import), await it.
+      let haveGLTF = (typeof THREE !== 'undefined' && typeof THREE.GLTFLoader !== 'undefined');
+      try {
+        const res = ensureGlobalGLTFLoader();
+        if (res && typeof res.then === 'function') {
+          haveGLTF = await res;
+        } else {
+          haveGLTF = !!res || haveGLTF;
+        }
+      } catch (_) { /* ignore */ }
+
+      if (!haveGLTF) {
         throw new Error('No suitable loader available (neither THREE_VRM nor THREE.GLTFLoader found)');
       }
 

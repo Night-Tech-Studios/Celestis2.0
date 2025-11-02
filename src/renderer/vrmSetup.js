@@ -8,15 +8,59 @@ async function ensureEsmModules() {
   if (typeof window !== 'undefined' && window.THREE && window.THREE_VRM) {
     return { THREE: window.THREE, THREE_VRM: window.THREE_VRM };
   }
-
-  // Try dynamic ESM imports relative to this file (best-effort). These paths work if node_modules exist
+  // Avoid importing jsm files that contain bare 'three' specifiers directly from the browser.
+  // Instead fetch the three.module.js and loader source, rewrite loader imports to reference a blob URL
+  // that contains three.module.js, then dynamic-import the rewritten loader module.
   try {
-    const { GLTFLoader } = await import('../node_modules/three/examples/jsm/loaders/GLTFLoader.js');
-    const three = await import('../node_modules/three/build/three.module.js');
-    const vrm = await import('../node_modules/@pixiv/three-vrm/dist/three-vrm.module.js');
-    return { THREE: three, THREE_VRM: vrm, GLTFLoader };
+    // Resolve URLs relative to this module
+    const threeUrl = new URL('../node_modules/three/build/three.module.js', import.meta.url).href;
+    const loaderUrl = new URL('../node_modules/three/examples/jsm/loaders/GLTFLoader.js', import.meta.url).href;
+    const vrmUrl = new URL('../node_modules/@pixiv/three-vrm/dist/three-vrm.module.js', import.meta.url).href;
+
+    // Fetch sources
+    const [threeRes, loaderRes, vrmRes] = await Promise.all([
+      fetch(threeUrl),
+      fetch(loaderUrl),
+      fetch(vrmUrl).catch(() => null)
+    ]);
+
+    if (!threeRes.ok || !loaderRes.ok) {
+      console.warn('[vrmSetup] Could not fetch three.module.js or GLTFLoader.js');
+      return { THREE: null, THREE_VRM: null };
+    }
+
+    const threeSrc = await threeRes.text();
+    const loaderSrc = await loaderRes.text();
+    const vrmSrc = vrmRes && vrmRes.ok ? await vrmRes.text() : null;
+
+    // Create blob URL for three.module.js
+    const threeBlob = new Blob([threeSrc], { type: 'text/javascript' });
+    const threeBlobUrl = URL.createObjectURL(threeBlob);
+
+    // Rewrite loader source to import from the three blob url
+    const rewrittenLoader = loaderSrc.replace(/from\s+['"]three['"]/g, `from '${threeBlobUrl}'`);
+    const loaderBlob = new Blob([rewrittenLoader], { type: 'text/javascript' });
+    const loaderBlobUrl = URL.createObjectURL(loaderBlob);
+
+    // Import the rewritten loader
+    const loaderMod = await import(loaderBlobUrl);
+
+    // If we created a vrm source, try to import it similarly (it may import from 'three')
+    let vrmMod = null;
+    if (vrmSrc) {
+      const rewrittenVrm = vrmSrc.replace(/from\s+['"]three['"]/g, `from '${threeBlobUrl}'`);
+      const vrmBlob = new Blob([rewrittenVrm], { type: 'text/javascript' });
+      const vrmBlobUrl = URL.createObjectURL(vrmBlob);
+      try { vrmMod = await import(vrmBlobUrl); } catch (_e) { vrmMod = null; }
+    }
+
+    // cleanup blob URLs after module is loaded (modules stay in memory)
+    try { URL.revokeObjectURL(loaderBlobUrl); } catch (_) {}
+    try { URL.revokeObjectURL(threeBlobUrl); } catch (_) {}
+
+    return { THREE: null, THREE_VRM: vrmMod, GLTFLoader: loaderMod };
   } catch (e) {
-    console.warn('[vrmSetup] ESM dynamic import failed:', e.message || e);
+    console.warn('[vrmSetup] ESM dynamic fetch+import failed:', e && (e.message || e));
     return { THREE: null, THREE_VRM: null };
   }
 }
