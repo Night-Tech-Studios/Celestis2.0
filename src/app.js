@@ -34,6 +34,7 @@ class CelestisAI {
                         rendererTimeoutMs: 30000,
                         avatarScroll: true,
                         avatarInChat: false,
+                        username: '',
                         initialTemplate: 'You are a helpful AI assistant in a VRM avatar application. Be friendly and engaging.'
                 };
                 
@@ -1507,6 +1508,7 @@ class CelestisAI {
                         debugLog('Settings modal displayed');
                         
                         const openrouterApiKey = document.getElementById('openrouterApiKey');
+                        const username = document.getElementById('username');
                         const aiModel = document.getElementById('aiModel');
                         const voiceLanguage = document.getElementById('voiceLanguage');
                         const initialTemplate = document.getElementById('initialTemplate');
@@ -1515,6 +1517,7 @@ class CelestisAI {
                         const avatarScroll = document.getElementById('avatarScroll');
                         
                         if (openrouterApiKey) openrouterApiKey.value = this.settings.openrouterApiKey;
+                        if (username) username.value = this.settings.username || '';
                         if (aiModel) aiModel.value = this.settings.aiModel;
                         if (voiceLanguage) voiceLanguage.value = this.settings.voiceLanguage;
                         if (initialTemplate) initialTemplate.value = this.settings.initialTemplate;
@@ -1574,11 +1577,13 @@ class CelestisAI {
                 const aiModel = document.getElementById('aiModel');
                 const voiceLanguage = document.getElementById('voiceLanguage');
                 const initialTemplate = document.getElementById('initialTemplate');
+                const username = document.getElementById('username');
                 
                 if (openrouterApiKey) this.settings.openrouterApiKey = openrouterApiKey.value;
                 if (aiModel) this.settings.aiModel = aiModel.value;
                 if (voiceLanguage) this.settings.voiceLanguage = voiceLanguage.value;
                 if (initialTemplate) this.settings.initialTemplate = initialTemplate.value;
+                if (username) this.settings.username = username.value;
                 const rendererEngine = document.getElementById('rendererEngine');
                 const avatarScroll = document.getElementById('avatarScroll');
                 const avatarInChat = document.getElementById('avatarInChat');
@@ -1713,13 +1718,18 @@ class CelestisAI {
         }
 
         async callOpenRouterAPI() {
-                const messages = [
-                        {
-                                role: 'system',
-                                content: this.settings.initialTemplate
-                        },
-                        ...this.conversationHistory
-                ];
+                const messages = [];
+                // If user set a username, expose it as a system-level identity hint so the AI can address them appropriately
+                try {
+                        if (this.settings && this.settings.username && this.settings.username.trim()) {
+                                messages.push({ role: 'system', content: `User identity: ${this.settings.username.trim()}. Use this name when addressing the user when appropriate.` });
+                        }
+                } catch (_) {}
+
+                // Primary system template that guides assistant behavior
+                messages.push({ role: 'system', content: this.settings.initialTemplate });
+                // Conversation history follows
+                messages.push(...this.conversationHistory);
                 
                 const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
                         method: 'POST',
@@ -1807,10 +1817,10 @@ class CelestisAI {
 
         setupTemplatePresets() {
                 const presets = {
-                        friendly: "You are a warm, friendly AI assistant in a VRM avatar application. Be cheerful, enthusiastic, and supportive in all your responses. Use casual language and show genuine interest in helping users.",
-                        professional: "You are a professional AI assistant with expertise across multiple domains. Provide clear, accurate, and well-structured responses. Maintain a courteous and business-appropriate tone.",
-                        creative: "You are a creative AI assistant who loves to think outside the box. Be imaginative, inspiring, and help users explore new ideas. Encourage creativity and offer unique perspectives.",
-                        technical: "You are a technical expert AI assistant specializing in programming, technology, and problem-solving. Provide detailed, accurate technical information and practical solutions."
+                        Celestis: "You are celestis an virtual ai assitant that lives in my computer ",
+                        Frieren: "You are Frieren an powerfull elf mage that likes strange spells and collecting grimores ",
+                        Tsuyu_Asui: "You are Tsuyu Asui also know as Froppy you are straightforward and aloof, speaking bluntly from her mind and freely expressing what she thinks about others you prefers to be called Tsu but only by people you views as friends. She commonly refers to everyone with the honorific -chan, you are noticeably calm and collected, staying levelheaded and focused even during the most stressful situations. you has excellent judgment, can communicate your intentions easily, and is rarely moved by emotion,you tends to say Kero, emulating a frog's croaking, at the end of your sentences or as a replacement for many of your single-word replies.",
+                        Void_Nexai: "You are Void Nexai alson known as The Herald you are the god of knowlodge and you tend to watch the multiverse trougth the multiversal tree Yggdrasil you like the pepole of that worlds"
                 };
 
                 const presetButtons = document.querySelectorAll('.preset-btn');

@@ -77,6 +77,11 @@
                         </select>
                     </div>
                     <div class="setting-group">
+                        <label for="username">Your name (for AI):</label>
+                        <input type="text" id="username" placeholder="Enter your preferred display name" />
+                        <small class="setting-help">Optional. The AI will use this name when addressing you in chat.</small>
+                    </div>
+                    <div class="setting-group">
                         <label for="rendererEngine">Renderer Engine:</label>
                         <select id="rendererEngine">
                             <option value="2d">2D Canvas (Default)</option>
@@ -137,10 +142,10 @@
                         <label for="initialTemplate">AI Initial Template:</label>
                         <div class="template-presets">
                             <small>Quick presets:</small>
-                            <button type="button" class="preset-btn" data-preset="friendly">Friendly Assistant</button>
-                            <button type="button" class="preset-btn" data-preset="professional">Professional</button>
-                            <button type="button" class="preset-btn" data-preset="creative">Creative Helper</button>
-                            <button type="button" class="preset-btn" data-preset="technical">Technical Expert</button>
+                            <button type="button" class="preset-btn" data-preset="Celestis">Celestis</button>
+                            <button type="button" class="preset-btn" data-preset="Frieren">Frieren</button>
+                            <button type="button" class="preset-btn" data-preset="Tsuyu_Asui">Tsuyu_Asui</button>
+                            <button type="button" class="preset-btn" data-preset="Void_Nexai">Void_Nexai</button>
                         </div>
                         <textarea id="initialTemplate" placeholder="Example: You are a knowledgeable AI assistant with expertise in technology. Respond in a friendly but professional manner. Keep answers concise and helpful." rows="4"></textarea>
                         <small class="setting-help">This template sets the AI's base personality and behavior. It won't appear in chat messages but will guide all AI responses. Changes take effect immediately.</small>

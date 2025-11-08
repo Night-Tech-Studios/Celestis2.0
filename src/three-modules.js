@@ -17,63 +17,84 @@
 	Object.assign(window.THREE, THREE_NS);
 	// Helper: load a jsm loader module from provided source text by creating a module blob
 	// and rewriting the bare 'three' import to point at a blob URL for three.module.js.
-	async function importJsmFromSources(threeSource, loaderSource) {
-		if (!loaderSource) return null;
-		// If we have a threeSource, prefer to create a blob URL for it and rewrite imports
-		if (threeSource) {
-			const threeBlob = new Blob([threeSource], { type: 'text/javascript' });
-			const threeUrl = URL.createObjectURL(threeBlob);
-			try {
-				// Replace import specifiers in loaderSource that import from 'three'
-				const rewritten = loaderSource.replace(/from\s+['"]three['"]/g, `from '${threeUrl}'`);
-				const loaderBlob = new Blob([rewritten], { type: 'text/javascript' });
-				const loaderUrl = URL.createObjectURL(loaderBlob);
-				try {
-					const mod = await import(loaderUrl);
-					// cleanup
-					URL.revokeObjectURL(loaderUrl);
-					URL.revokeObjectURL(threeUrl);
-					return mod;
-				} catch (e) {
-					URL.revokeObjectURL(loaderUrl);
-					URL.revokeObjectURL(threeUrl);
-					throw e;
-				}
-			} catch (e) {
-				try { URL.revokeObjectURL(threeUrl); } catch (_){ }
-				throw e;
-			}
-		}
+		// loaderBaseUrl is optional and should be the absolute URL where the loader source was fetched from.
+		// When provided we rewrite relative imports (./, ../) to absolute URLs so they resolve correctly
+		// even when the loader is imported via a blob URL.
+		async function importJsmFromSources(threeSource, loaderSource, loaderBaseUrl = null) {
+			if (!loaderSource) return null;
 
-		// If no threeSource available but runtime has window.THREE, rewrite imports to use window.THREE
-		if (typeof window !== 'undefined' && window.THREE) {
-			try {
-				let rewritten = loaderSource;
-				// Replace `import * as THREE from 'three';` -> `const THREE = window.THREE;`
-				rewritten = rewritten.replace(/import\s+\*\s+as\s+THREE\s+from\s+['"]three['"];/g, 'const THREE = window.THREE;');
-				// Replace named imports: import { A, B } from 'three'; -> const {A, B} = window.THREE;
-				rewritten = rewritten.replace(/import\s+\{([^}]*)\}\s+from\s+['"]three['"];/g, (m, p1) => {
-					return 'const {' + p1 + '} = window.THREE;';
+			// Helper to rewrite relative imports (./ or ../) to absolute URLs based on loaderBaseUrl
+			function rewriteRelativeImports(src, base) {
+				if (!base) return src;
+				return src.replace(/from\s+['"](\.\/?[^'"\)]*)['"]/g, (m, p1) => {
+					try {
+						const abs = new URL(p1, base).href;
+						return `from '${abs}'`;
+					} catch (_e) {
+						return m;
+					}
 				});
-				// Replace default import patterns (rare) -> const THREE = window.THREE;
-				rewritten = rewritten.replace(/import\s+THREE\s+from\s+['"]three['"];/g, 'const THREE = window.THREE;');
-				const loaderBlob = new Blob([rewritten], { type: 'text/javascript' });
-				const loaderUrl = URL.createObjectURL(loaderBlob);
+			}
+
+			// If we have a threeSource, prefer to create a blob URL for it and rewrite imports
+			if (threeSource) {
+				const threeBlob = new Blob([threeSource], { type: 'text/javascript' });
+				const threeUrl = URL.createObjectURL(threeBlob);
 				try {
-					const mod = await import(loaderUrl);
-					URL.revokeObjectURL(loaderUrl);
-					return mod;
+					// Replace import specifiers in loaderSource that import from 'three'
+					let rewritten = loaderSource.replace(/from\s+['"]three['"]/g, `from '${threeUrl}'`);
+					// Rewrite relative imports to absolute URLs when a base is provided
+					rewritten = rewriteRelativeImports(rewritten, loaderBaseUrl);
+					const loaderBlob = new Blob([rewritten], { type: 'text/javascript' });
+					const loaderUrl = URL.createObjectURL(loaderBlob);
+					try {
+						const mod = await import(loaderUrl);
+						// cleanup
+						URL.revokeObjectURL(loaderUrl);
+						URL.revokeObjectURL(threeUrl);
+						return mod;
+					} catch (e) {
+						URL.revokeObjectURL(loaderUrl);
+						URL.revokeObjectURL(threeUrl);
+						throw e;
+					}
 				} catch (e) {
-					URL.revokeObjectURL(loaderUrl);
+					try { URL.revokeObjectURL(threeUrl); } catch (_){ }
 					throw e;
 				}
-			} catch (e) {
-				throw e;
 			}
-		}
 
-		return null;
-	}
+			// If no threeSource available but runtime has window.THREE, rewrite imports to use window.THREE
+			if (typeof window !== 'undefined' && window.THREE) {
+				try {
+					let rewritten = loaderSource;
+					// Replace `import * as THREE from 'three';` -> `const THREE = window.THREE;`
+					rewritten = rewritten.replace(/import\s+\*\s+as\s+THREE\s+from\s+['"]three['"];/g, 'const THREE = window.THREE;');
+					// Replace named imports: import { A, B } from 'three'; -> const {A, B} = window.THREE;
+					rewritten = rewritten.replace(/import\s+\{([^}]*)\}\s+from\s+['"]three['"];/g, (m, p1) => {
+						return 'const {' + p1 + '} = window.THREE;';
+					});
+					// Replace default import patterns (rare) -> const THREE = window.THREE;
+					rewritten = rewritten.replace(/import\s+THREE\s+from\s+['"]three['"];/g, 'const THREE = window.THREE;');
+					// Rewrite relative imports to absolute URLs when a base is provided
+					rewritten = rewriteRelativeImports(rewritten, loaderBaseUrl);
+					const loaderBlob = new Blob([rewritten], { type: 'text/javascript' });
+					const loaderUrl = URL.createObjectURL(loaderBlob);
+					try {
+						const mod = await import(loaderUrl);
+						URL.revokeObjectURL(loaderUrl);
+						return mod;
+					} catch (e) {
+						URL.revokeObjectURL(loaderUrl);
+						throw e;
+					}
+				} catch (e) {
+					throw e;
+				}
+			}
+
+			return null;
+		}
 	console.log('[three-modules.js] THREE loaded:', !!window.THREE);
 	console.log('[three-modules.js] THREE.REVISION:', window.THREE.REVISION);
 
@@ -99,7 +120,8 @@
 				if (window.celestis && window.celestis.threeModuleSource && window.celestis.loaderJsm && window.celestis.loaderJsm.gltf) {
 					console.log('[three-modules.js] Attempting to import GLTFLoader from preload-provided jsm sources via blob');
 					try {
-						const mod = await importJsmFromSources(window.celestis.threeModuleSource, window.celestis.loaderJsm.gltf);
+						// loaderBaseUrl unknown for preload-provided source
+						const mod = await importJsmFromSources(window.celestis.threeModuleSource, window.celestis.loaderJsm.gltf, null);
 						const GLTFLoader = (mod && (mod.GLTFLoader || mod.default || mod));
 						if (GLTFLoader) {
 							window.THREE = window.THREE || {};
@@ -123,7 +145,8 @@
 						// Try blob-import even if threeModuleSource is missing by letting importJsmFromSources
 						// rewrite the loader source to reference the runtime window.THREE object.
 						try {
-							const mod = await importJsmFromSources(window.celestis && window.celestis.threeModuleSource ? window.celestis.threeModuleSource : null, txt);
+							// txt was fetched from localJsmUrl; pass its absolute URL as loaderBaseUrl so relative imports resolve
+							const mod = await importJsmFromSources(window.celestis && window.celestis.threeModuleSource ? window.celestis.threeModuleSource : null, txt, localJsmUrl);
 							const GLTFLoader = (mod && (mod.GLTFLoader || mod.default || mod));
 							if (GLTFLoader) {
 								window.THREE = window.THREE || {};
@@ -162,7 +185,7 @@
 					if (looksLikeEsmLocal) {
 						// Try blob-import even without a threeModuleSource by falling back to runtime window.THREE
 						try {
-							const mod = await importJsmFromSources(window.celestis && window.celestis.threeModuleSource ? window.celestis.threeModuleSource : null, txtl);
+								const mod = await importJsmFromSources(window.celestis && window.celestis.threeModuleSource ? window.celestis.threeModuleSource : null, txtl, localJsmUrl);
 							const GLTFLoader = (mod && (mod.GLTFLoader || mod.default || mod));
 							if (GLTFLoader) {
 								window.THREE = window.THREE || {};
@@ -201,7 +224,9 @@
 					if (looksLikeEsm) {
 						// Try blob-import even without threeModuleSource by rewriting imports to use window.THREE
 						try {
-							const mod = await importJsmFromSources(window.celestis && window.celestis.threeModuleSource ? window.celestis.threeModuleSource : null, txt);
+								// txt was fetched from jsmPath; compute absolute base and pass it
+								const jsmAbsolute = new URL(jsmPath, import.meta.url).href;
+								const mod = await importJsmFromSources(window.celestis && window.celestis.threeModuleSource ? window.celestis.threeModuleSource : null, txt, jsmAbsolute);
 							const GLTFLoader = (mod && (mod.GLTFLoader || mod.default || mod));
 							if (GLTFLoader) {
 								window.THREE = window.THREE || {};
@@ -242,7 +267,8 @@
 					if (looksLikeEsm2) {
 						// Try blob-import even without threeModuleSource by rewriting imports to use window.THREE
 						try {
-							const mod = await importJsmFromSources(window.celestis && window.celestis.threeModuleSource ? window.celestis.threeModuleSource : null, txt2);
+							const umdAbsolute = new URL(umdPath, import.meta.url).href;
+							const mod = await importJsmFromSources(window.celestis && window.celestis.threeModuleSource ? window.celestis.threeModuleSource : null, txt2, umdAbsolute);
 							const GLTFLoader = (mod && (mod.GLTFLoader || mod.default || mod));
 							if (GLTFLoader) {
 								window.THREE = window.THREE || {};
