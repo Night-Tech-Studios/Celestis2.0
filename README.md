@@ -48,7 +48,7 @@ Version 1.0 got archived due to poor performance in tests and in most of machine
    - Choose your voice recognition language
    - Click "Save Settings"
 
-2. **Import VRM Avatar:** bot working at moment
+2. **Import VRM Avatar:** not working at moment
    - Click "Import VRM" or use File > Import VRM
    - Select a VRM file from your computer
    - The avatar will appear in the 3D viewport
