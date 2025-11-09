@@ -150,6 +150,16 @@
                         <textarea id="initialTemplate" placeholder="Example: You are a knowledgeable AI assistant with expertise in technology. Respond in a friendly but professional manner. Keep answers concise and helpful." rows="4"></textarea>
                         <small class="setting-help">This template sets the AI's base personality and behavior. It won't appear in chat messages but will guide all AI responses. Changes take effect immediately.</small>
                     </div>
+                    <div class="setting-group">
+                        <label for="rememberConversation">Remember conversation (debug)</label>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                            <input type="checkbox" id="rememberConversation" />
+                            <small class="setting-help" style="margin:0">When enabled, the app will persist recent chat history across runs (useful for debugging). Saved messages are limited for privacy.</small>
+                        </div>
+                        <div style="margin-top:8px;">
+                            <button type="button" id="clearRememberedConversationBtn" class="btn btn-secondary">Clear remembered conversation</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button id="saveSettingsBtn" class="btn btn-primary">Save Settings</button>

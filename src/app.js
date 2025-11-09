@@ -35,6 +35,10 @@ class CelestisAI {
                         avatarScroll: true,
                         avatarInChat: false,
                         username: '',
+                        // When enabled, persist recent conversation to settings for debugging purposes
+                        rememberConversation: false,
+                        // Stored remembered conversation (array of {role,content})
+                        rememberedConversation: [],
                         initialTemplate: 'You are a helpful AI assistant in a VRM avatar application. Be friendly and engaging.'
                 };
                 
@@ -199,7 +203,10 @@ class CelestisAI {
                         self.updateAvatarStatus('Initializing application...');
                         
                         self.setupEventListeners();
-                        self.loadInternalAvatars();
+                        // Load saved settings first so we can honor a remembered internal avatar
+                        try { await self.loadSettings(); } catch (_) {}
+                        // Then enumerate internal avatars and auto-load the saved one (if any)
+                        try { await self.loadInternalAvatars(); } catch (_) {}
                         
                         // Choose renderer based on settings: 'three' or '2d'
                         // We attempt to initialize Three.js safely when requested, but fall
@@ -245,7 +252,6 @@ class CelestisAI {
                         }
                         
                         self.setupSpeechRecognition();
-                        await self.loadSettings();
                         try { self.applyAvatarScrollSetting(); } catch(_){ }
                         try { if (self.settings.avatarInChat) self.placeAvatarInChat(); else self.placeAvatarFloating(); } catch(_){}
 
@@ -680,7 +686,19 @@ class CelestisAI {
                 if (internalSelect) {
                         internalSelect.addEventListener('change', async (e) => {
                                 const fileName = e.target.value;
-                                if (!fileName) return;
+                                // If user cleared selection, remember that and return
+                                if (!fileName) {
+                                        try {
+                                                this.settings.internalAvatar = '';
+                                                await ipc.invoke('save-settings', this.settings);
+                                                debugLog('Cleared remembered internal avatar');
+                                        } catch(_) {}
+                                        return;
+                                }
+
+                                // Remember the selected internal avatar and persist settings
+                                try { await this.rememberInternalAvatar(fileName); } catch(_) {}
+
                                 try {
                                         debugLog('Loading internal avatar: ' + fileName);
                                         const buffer = await ipc.invoke('read-internal-avatar', fileName);
@@ -808,6 +826,26 @@ class CelestisAI {
                                 select.appendChild(opt);
                         });
                         debugLog('Loaded internal avatars: ' + list.length);
+
+                        // If the user previously selected an internal avatar, auto-select and load it
+                        try {
+                                if (this.settings && this.settings.internalAvatar) {
+                                        const saved = list.find(x => x.name === this.settings.internalAvatar);
+                                        if (saved) {
+                                                select.value = saved.name;
+                                                debugLog('Auto-loading remembered internal avatar: ' + saved.name);
+                                                try {
+                                                        const buffer = await ipc.invoke('read-internal-avatar', saved.name);
+                                                        await this.loadVRMFromBuffer(buffer, saved.name);
+                                                        try { ipc.send('forward-to-preview', buffer, saved.name); } catch(_) {}
+                                                } catch (e) {
+                                                        debugLog('Auto-load internal avatar failed: ' + (e?.message || e));
+                                                }
+                                        }
+                                }
+                        } catch (e) {
+                                debugLog('Error while attempting to auto-load remembered internal avatar: ' + (e?.message || e));
+                        }
                 } catch (e) {
                         debugLog('Failed to load internal avatars: ' + (e?.message || e));
                 }
@@ -1500,6 +1538,21 @@ class CelestisAI {
                 ipc.send('import-vrm');
         }
 
+        // Remember the user's selected internal avatar and persist to settings
+        async rememberInternalAvatar(fileName) {
+                try {
+                        if (!fileName) {
+                                this.settings.internalAvatar = '';
+                        } else {
+                                this.settings.internalAvatar = fileName;
+                        }
+                        await ipc.invoke('save-settings', this.settings);
+                        debugLog('Remembered internal avatar: ' + (fileName || '<cleared>'));
+                } catch (e) {
+                        debugLog('Failed to save remembered internal avatar: ' + (e?.message || e));
+                }
+        }
+
         openSettings() {
                 debugLog('Opening settings modal...');
                 const settingsModal = document.getElementById('settingsModal');
@@ -1524,6 +1577,17 @@ class CelestisAI {
                         if (rendererEngine) rendererEngine.value = this.settings.rendererEngine || 'three';
                         if (avatarScroll) avatarScroll.checked = !!this.settings.avatarScroll;
                         if (avatarInChat) avatarInChat.checked = !!this.settings.avatarInChat;
+                        const rememberConversationEl = document.getElementById('rememberConversation');
+                        const clearRememberedConversationBtn = document.getElementById('clearRememberedConversationBtn');
+                        if (rememberConversationEl) rememberConversationEl.checked = !!this.settings.rememberConversation;
+                        if (clearRememberedConversationBtn) {
+                                // attach click handler (safe to attach multiple times - harmless)
+                                clearRememberedConversationBtn.addEventListener('click', async (ev) => {
+                                        ev.preventDefault();
+                                        await this.clearRememberedConversation();
+                                        this.addMessage('Remembered conversation cleared', 'system');
+                                });
+                        }
                         // autosave the initialTemplate when the user types
                         if (initialTemplate) {
                                 if (!this._initialTemplateAutosave) {
@@ -1584,6 +1648,8 @@ class CelestisAI {
                 if (voiceLanguage) this.settings.voiceLanguage = voiceLanguage.value;
                 if (initialTemplate) this.settings.initialTemplate = initialTemplate.value;
                 if (username) this.settings.username = username.value;
+                const rememberConversationEl = document.getElementById('rememberConversation');
+                if (rememberConversationEl) this.settings.rememberConversation = !!rememberConversationEl.checked;
                 const rendererEngine = document.getElementById('rendererEngine');
                 const avatarScroll = document.getElementById('avatarScroll');
                 const avatarInChat = document.getElementById('avatarInChat');
@@ -1665,9 +1731,61 @@ class CelestisAI {
                         if (savedSettings) {
                                 this.settings = { ...this.settings, ...savedSettings };
                                 debugLog('Settings loaded successfully');
+
+                                // If conversation memory is enabled and there is a stored conversation, restore it
+                                try {
+                                        if (this.settings.rememberConversation && Array.isArray(this.settings.rememberedConversation) && this.settings.rememberedConversation.length) {
+                                                // restore into runtime conversationHistory and render UI
+                                                this.conversationHistory = this.settings.rememberedConversation.slice();
+                                                try { this.renderConversationHistory(); } catch (e) { debugLog('Failed to render restored conversation: ' + (e?.message || e)); }
+                                        }
+                                } catch (e) {
+                                        debugLog('Error restoring remembered conversation: ' + (e?.message || e));
+                                }
                         }
                 } catch (error) {
                         debugLog('ERROR loading settings: ' + error.message);
+                }
+        }
+
+        // Render the in-memory conversationHistory to the chat UI
+        renderConversationHistory() {
+                try {
+                        const messagesContainer = document.getElementById('chatMessages');
+                        if (!messagesContainer) return;
+                        messagesContainer.innerHTML = '';
+                        (this.conversationHistory || []).forEach(m => {
+                                const type = (m.role === 'user') ? 'user' : (m.role === 'assistant') ? 'ai' : 'system';
+                                try { this.addMessage(m.content, type); } catch (_) {}
+                        });
+                } catch (e) {
+                        debugLog('renderConversationHistory error: ' + (e?.message || e));
+                }
+        }
+
+        // Persist recent conversationHistory into settings (capped)
+        async saveRememberedConversation() {
+                try {
+                        if (!this.settings) return;
+                        const cap = 100; // keep up to 100 messages
+                        const toSave = (this.conversationHistory || []).slice(-cap);
+                        this.settings.rememberedConversation = toSave;
+                        await ipc.invoke('save-settings', this.settings);
+                        debugLog('Saved remembered conversation (' + toSave.length + ' messages)');
+                } catch (e) {
+                        debugLog('Failed to save remembered conversation: ' + (e?.message || e));
+                }
+        }
+
+        // Clear persisted remembered conversation
+        async clearRememberedConversation() {
+                try {
+                        if (!this.settings) this.settings = {};
+                        this.settings.rememberedConversation = [];
+                        await ipc.invoke('save-settings', this.settings);
+                        debugLog('Cleared remembered conversation');
+                } catch (e) {
+                        debugLog('Failed to clear remembered conversation: ' + (e?.message || e));
                 }
         }
 
@@ -1707,6 +1825,12 @@ class CelestisAI {
                                 role: 'assistant',
                                 content: response
                         });
+                        // Persist conversation if enabled for debugging
+                        try {
+                                if (this.settings && this.settings.rememberConversation) {
+                                        await this.saveRememberedConversation();
+                                }
+                        } catch (e) { debugLog('Error while saving remembered conversation: ' + (e?.message || e)); }
                         
                         if (this.vrm) {
                                 this.animateAvatar('talk');
@@ -1819,7 +1943,7 @@ class CelestisAI {
                 const presets = {
                         Celestis: "You are celestis an virtual ai assitant that lives in my computer ",
                         Frieren: "You are Frieren an powerfull elf mage that likes strange spells and collecting grimores ",
-                        Tsuyu_Asui: "You are Tsuyu Asui also know as Froppy you are straightforward and aloof, speaking bluntly from her mind and freely expressing what she thinks about others you prefers to be called Tsu but only by people you views as friends. She commonly refers to everyone with the honorific -chan, you are noticeably calm and collected, staying levelheaded and focused even during the most stressful situations. you has excellent judgment, can communicate your intentions easily, and is rarely moved by emotion,you tends to say Kero, emulating a frog's croaking, at the end of your sentences or as a replacement for many of your single-word replies.",
+                        Tsuyu_Asui: "You are Tsuyu Asui also know as Froppy you are straightforward and aloof, speaking bluntly from her mind and freely expressing what she thinks about others, you are frendly and lovely you prefers to be called Tsu but only by people you views as friends. She commonly refers to everyone with the honorific -chan, you are noticeably calm and collected, staying levelheaded and focused even during the most stressful situations. you has excellent judgment, can communicate your intentions easily, and is rarely moved by emotion,you tends to say Kero, emulating a frog's croaking, at the end of your sentences or as a replacement for many of your single-word replies but not too much.",
                         Void_Nexai: "You are Void Nexai alson known as The Herald you are the god of knowlodge and you tend to watch the multiverse trougth the multiversal tree Yggdrasil you like the pepole of that worlds"
                 };
 
