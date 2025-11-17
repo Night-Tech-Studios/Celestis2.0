@@ -12,9 +12,25 @@
 		THREE_NS = {};
 	}
 
-	// Attach to window for the rest of the app which expects global THREE
-	window.THREE = window.THREE || {};
-	Object.assign(window.THREE, THREE_NS);
+	// Attach to window for the rest of the app which expects a plain global THREE
+	// Avoid assigning into module namespace objects which expose read-only properties
+	// (some module namespace objects can throw when properties are written). Instead
+	// copy exported values onto a plain object and merge that into window.THREE.
+	try {
+		const exportsCopy = {};
+		for (const key of Reflect.ownKeys(THREE_NS)) {
+			try {
+				exportsCopy[key] = THREE_NS[key];
+			} catch (e) {
+				// skip any problematic accessor properties
+				console.warn('[three-modules.js] Skipping export copy for', key, e && e.message);
+			}
+		}
+		window.THREE = Object.assign({}, (window.THREE && typeof window.THREE === 'object') ? window.THREE : {}, exportsCopy);
+	} catch (e) {
+		// Fallback: attach the module namespace directly when copy fails (non-ideal)
+		try { window.THREE = window.THREE || THREE_NS; } catch (_) { window.THREE = THREE_NS; }
+	}
 	// Helper: load a jsm loader module from provided source text by creating a module blob
 	// and rewriting the bare 'three' import to point at a blob URL for three.module.js.
 		// loaderBaseUrl is optional and should be the absolute URL where the loader source was fetched from.
@@ -68,14 +84,19 @@
 			if (typeof window !== 'undefined' && window.THREE) {
 				try {
 					let rewritten = loaderSource;
-					// Replace `import * as THREE from 'three';` -> `const THREE = window.THREE;`
-					rewritten = rewritten.replace(/import\s+\*\s+as\s+THREE\s+from\s+['"]three['"];/g, 'const THREE = window.THREE;');
-					// Replace named imports: import { A, B } from 'three'; -> const {A, B} = window.THREE;
-					rewritten = rewritten.replace(/import\s+\{([^}]*)\}\s+from\s+['"]three['"];/g, (m, p1) => {
+					// Replace common import patterns that reference the bare 'three' specifier
+					// Be permissive with whitespace and optional trailing semicolons so different styles are handled.
+					rewritten = rewritten.replace(/import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+['"]three['"]\s*;?/g, (m, ident) => {
+						return 'const ' + ident + ' = window.THREE;';
+					});
+					rewritten = rewritten.replace(/import\s+\{([^}]*)\}\s+from\s+['"]three['"]\s*;?/g, (m, p1) => {
 						return 'const {' + p1 + '} = window.THREE;';
 					});
-					// Replace default import patterns (rare) -> const THREE = window.THREE;
-					rewritten = rewritten.replace(/import\s+THREE\s+from\s+['"]three['"];/g, 'const THREE = window.THREE;');
+					rewritten = rewritten.replace(/import\s+([A-Za-z_$][\w$]*)\s+from\s+['"]three['"]\s*;?/g, (m, ident) => {
+						return 'const ' + ident + ' = window.THREE;';
+					});
+					// Catch any remaining `from 'three'` occurrences and remove them (best-effort)
+					rewritten = rewritten.replace(/from\s+['"]three['"]\s*;?/g, '');
 					// Rewrite relative imports to absolute URLs when a base is provided
 					rewritten = rewriteRelativeImports(rewritten, loaderBaseUrl);
 					const loaderBlob = new Blob([rewritten], { type: 'text/javascript' });

@@ -34,13 +34,19 @@ body {
 }
 
 #avatarCanvas {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 100vh;
-    z-index: -1;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    /* Avatar canvas now lives inside the chat container and is centered there */
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 48%;
+    height: 60%;
+    max-width: 720px;
+    max-height: 720px;
+    z-index: 5; /* sit behind chat bubbles */
+    pointer-events: none; /* allow clicks through */
+    background: transparent;
+    border-radius: 12px;
 }
 
 .main-content {
@@ -106,7 +112,7 @@ body {
     transform: translateY(-50%);
     width: 34%;
     max-width: 360px;
-    z-index: 12; /* above chat content */
+    z-index: 10; /* keep overlay slightly behind chat message bubbles */
 }
 
 @media (max-width: 800px) {
@@ -135,6 +141,7 @@ body {
     border-radius: 20px;
     border: 1px solid rgba(255, 255, 255, 0.4);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+    position: relative; /* allow absolutely positioned avatarCanvas inside */
 }
 
 .chat-messages {
@@ -144,6 +151,8 @@ body {
     display: flex;
     flex-direction: column;
     gap: 1rem;
+    position: relative;
+    z-index: 20; /* ensure chat bubbles render above the avatar canvas */
 }
 
 .message {

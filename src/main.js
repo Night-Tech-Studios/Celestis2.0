@@ -2,6 +2,22 @@ const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
+// Ensure hardware acceleration / GPU features are encouraged on startup.
+// These command-line switches help on Windows where ANGLE/D3D may be required
+// and can enable WebGL2/WebGPU related features. They are additive and
+// will be ignored if unsupported by the current platform/Electron build.
+try {
+  app.commandLine.appendSwitch('ignore-gpu-blacklist');
+  app.commandLine.appendSwitch('enable-gpu-rasterization');
+  app.commandLine.appendSwitch('enable-webgl2-compute-context');
+  app.commandLine.appendSwitch('use-angle', 'd3d11');
+  app.commandLine.appendSwitch('enable-native-gpu-memory-buffers');
+  app.commandLine.appendSwitch('enable-zero-copy');
+  app.commandLine.appendSwitch('enable-experimental-web-platform-features');
+} catch (e) {
+  console.warn('Failed to append GPU-related commandLine switches:', e && e.message);
+}
+
 let mainWindow;
 let previewWindow;
 
@@ -12,10 +28,14 @@ function createWindow() {
       webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js')
+      preload: path.join(__dirname, 'preload.js'),
+      // Opt-in to experimental/accelerated features where available
+      experimentalFeatures: true,
+      // Offscreen rendering disabled by default; keep it explicit
+      offscreen: false
     },
     icon: path.join(__dirname, '../assets/icon.png'),
-    title: 'Celestis AI Avatar'
+    title: 'Celestis AI'
   });
 
   mainWindow.loadFile('src/index.html');

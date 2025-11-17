@@ -171,6 +171,36 @@ try { console.log('[preload] platform:', osPlatform || 'unknown'); } catch (e) {
       api.THREE_VRM = (THREE_VRM && THREE_VRM.default) ? THREE_VRM.default : THREE_VRM;
     } catch (_) {}
 
+    // Try to load Babylon core, loaders and VRM loader (node-side) so they register with the global BABYLON when possible
+    try {
+      let BABYLON = null;
+      let babylonLoaders = null;
+      let babylonVrm = null;
+      try { BABYLON = runtimeRequire && runtimeRequire('@babylonjs/core'); } catch(_) { BABYLON = null; }
+      if (!BABYLON) {
+        try { const mod = await import('@babylonjs/core'); BABYLON = mod && (mod.default || mod); } catch(_) { BABYLON = null; }
+      }
+
+      try { babylonLoaders = runtimeRequire && runtimeRequire('@babylonjs/loaders'); } catch(_) { babylonLoaders = null; }
+      if (!babylonLoaders) {
+        try { const mod = await import('@babylonjs/loaders'); babylonLoaders = mod && (mod.default || mod); } catch(_) { babylonLoaders = null; }
+      }
+
+      try { babylonVrm = runtimeRequire && runtimeRequire('babylon-vrm-loader'); } catch(_) { babylonVrm = null; }
+      if (!babylonVrm) {
+        try { const mod = await import('babylon-vrm-loader'); babylonVrm = mod && (mod.default || mod); } catch(_) { babylonVrm = null; }
+      }
+
+      api.BABYLON = BABYLON || null;
+      api.babylonLoaders = babylonLoaders || null;
+      api.babylonVrm = babylonVrm || null;
+      api._babylon_method = (api.BABYLON ? 'require' : 'none');
+    } catch (e) {
+      api.BABYLON = null;
+      api.babylonLoaders = null;
+      api.babylonVrm = null;
+    }
+
     api.preloadAttachTime = (performance && performance.now) ? performance.now() : Date.now();
   } catch (e) {
     // Top-level preload error should not prevent exposing an API
@@ -190,7 +220,11 @@ try { console.log('[preload] platform:', osPlatform || 'unknown'); } catch (e) {
       gltfUmd: api.__gltfUmd || null,
       __threeUmd: api.__threeUmd || null,
       __gltfUmd: api.__gltfUmd || null,
-      threeVrm: api.THREE_VRM,
+        // Babylon exposures
+        babylon: api.BABYLON || null,
+        babylonLoaders: api.babylonLoaders || null,
+        babylonVrm: api.babylonVrm || null,
+        threeVrm: api.THREE_VRM,
       gltfMethod: api._gltf_method,
       preloadAttachTime: api.preloadAttachTime,
       // expose raw UMD strings for debugging and fallback injection
@@ -202,6 +236,7 @@ try { console.log('[preload] platform:', osPlatform || 'unknown'); } catch (e) {
       threeModuleSource: api.__threeModule || null,
       // jsm content aliases
       __gltfJsm: api.__gltfJsm || null,
+        _babylon_method: api._babylon_method || 'none',
       onThreeReady: (cb) => {
         try { window.addEventListener('threejs-ready', cb); } catch (e) { try { cb(); } catch(_){} }
       }
@@ -215,6 +250,15 @@ try { console.log('[preload] platform:', osPlatform || 'unknown'); } catch (e) {
         window.__threeModulesLoaded = true;
         window.__preloadAttachTime = api.preloadAttachTime;
         try { window.dispatchEvent(new CustomEvent('threejs-ready')); } catch(_){}
+      }
+    } catch (_) {}
+
+    // If Babylon core was attached by preload, expose it to renderer global so loaders registered here become available
+    try {
+      if (api.BABYLON) {
+        try { window.BABYLON = api.BABYLON; } catch(_){}
+        if (api.babylonVrm) { try { window.BABYLON_VRM = api.babylonVrm; } catch(_){} }
+        try { window.dispatchEvent(new CustomEvent('babylon-ready')); } catch(_){ }
       }
     } catch (_) {}
 

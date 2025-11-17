@@ -23,8 +23,8 @@
             </div>
         </header>
 
-        <!-- Background Avatar Canvas -->
-        <canvas id="avatarCanvas"></canvas>
+        <!-- Background Avatar Canvas (now placed inside chat area for centered model) -->
+        <!-- canvas moved into the chat container further below -->
         <!-- Foreground Avatar Overlay (2D image) -->
         <div id="avatarOverlay" class="avatar-overlay" aria-hidden="true">
             <img id="avatarOverlayImg" alt="Avatar" src="" />
@@ -37,7 +37,9 @@
         <!-- Main Content -->
         <div class="main-content">
             <!-- Chat Interface -->
-            <div class="chat-container">
+                <div class="chat-container">
+                    <!-- Avatar canvas placed inside chat so the model appears centered within chat area -->
+                    <canvas id="avatarCanvas"></canvas>
                 <div id="chatMessages" class="chat-messages"></div>
                 
                 <div class="input-container">
@@ -85,9 +87,8 @@
                         <label for="rendererEngine">Renderer Engine:</label>
                         <select id="rendererEngine">
                             <option value="2d">2D Canvas (Default)</option>
-                            <option value="three">3D Renderer (Three.js)</option>
                         </select>
-                        <small class="setting-help">Select the renderer engine. The 3D renderer uses Three.js and supports VRM/GLTF models when available.</small>
+                        <small class="setting-help">Select the renderer engine. The 3D renderer can use Babylon.js or Three.js; GLTF/GLB models are supported where loader plugins are available.</small>
                     </div>
                     <div class="setting-group">
                         <label for="avatarScroll">Avatar Scrolling</label>
@@ -226,12 +227,15 @@
                             window.THREE_VRM = vrmPkg && (vrmPkg.default || vrmPkg);
                             console.log('[INIT] ✓ Required @pixiv/three-vrm');
                         } catch (e) {
+                            // Attempt dynamic import via promise (no top-level await in non-module script)
                             try {
-                                const vrmMod = await import('@pixiv/three-vrm');
-                                window.THREE_VRM = vrmMod && (vrmMod.default || vrmMod);
-                                console.log('[INIT] ✓ Imported @pixiv/three-vrm');
+                                import('@pixiv/three-vrm').then((vrmMod) => {
+                                    try { window.THREE_VRM = vrmMod && (vrmMod.default || vrmMod); } catch(_){}
+                                    console.log('[INIT] ✓ Imported @pixiv/three-vrm');
+                                }).catch((ie) => {
+                                    console.warn('[INIT] pixiv three-vrm not available locally');
+                                });
                             } catch (ie) {
-                                // not fatal
                                 console.warn('[INIT] pixiv three-vrm not available locally');
                             }
                         }
@@ -453,6 +457,25 @@
     <script type="module" src="renderer/vrmSetup.js"></script>
     <!-- Ensure a local module-based THREE attachment is available as an early fallback -->
     <script type="module" src="three-modules.js"></script>
+
+    <!-- Babylon.js: prefer preload-provided node_modules instance; fall back to CDN UMD if not present -->
+    <script>
+        (function(){
+            try {
+                if (window.celestis && window.celestis.babylon) {
+                    console.log('[INIT] Babylon provided by preload (node_modules)');
+                    try { window.BABYLON = window.celestis.babylon; } catch(_){}
+                } else {
+                    console.log('[INIT] Loading Babylon CDN UMD');
+                    const s = document.createElement('script');
+                    s.src = 'https://cdn.babylonjs.com/babylon.js';
+                    s.onload = () => { console.log('[INIT] Babylon CDN loaded'); };
+                    s.onerror = () => { console.warn('[INIT] Babylon CDN failed to load'); };
+                    document.head.appendChild(s);
+                }
+            } catch (e) { console.warn('[INIT] Babylon injection check failed: ' + (e && e.message)); }
+        })();
+    </script>
 
     <script src="modules/vrmLoader.js"></script>
     <script src="app.js"></script>

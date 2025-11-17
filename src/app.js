@@ -29,7 +29,7 @@ class CelestisAI {
                         openrouterApiKey: '',
                         aiModel: 'meta-llama/llama-4-maverick:free',
                         voiceLanguage: 'en-US',
-                        rendererEngine: 'three',
+                        rendererEngine: 'babylon',
                         // Increase default timeout to allow slower environments to initialize Three.js
                         rendererTimeoutMs: 30000,
                         avatarScroll: true,
@@ -214,7 +214,20 @@ class CelestisAI {
                         const engine = (self.settings && self.settings.rendererEngine) ? self.settings.rendererEngine : 'three';
                         debugLog('Selected renderer engine: ' + engine);
 
-                        if (engine === 'three' && (typeof THREE !== 'undefined' && THREE.WebGLRenderer)) {
+                        if (engine === 'babylon') {
+                                debugLog('Selected Babylon renderer');
+                                try {
+                                        const ok = await self.setupBabylonEngine();
+                                        if (!ok) {
+                                                debugLog('Babylon initialization failed, falling back to 2D');
+                                                try { self.setup2DEngine(); } catch (_) { self.setupFallbackDisplay(); }
+                                        }
+                                } catch (e) {
+                                        debugLog('Babylon initialization failed, falling back to 2D: ' + (e?.message || e));
+                                        try { self.setup2DEngine(); } catch (_) { self.setupFallbackDisplay(); }
+                                }
+                                // Babylon's render loop runs in setupBabylonEngine
+                        } else if (engine === 'three' && (typeof THREE !== 'undefined' && THREE.WebGLRenderer)) {
                                 debugLog('Three.js is available, attempting to set up 3D engine');
                                 self.updateAvatarStatus('Setting up 3D engine...');
                                 try {
@@ -355,6 +368,292 @@ class CelestisAI {
                 debugLog('Three.js setup completed successfully');
         }
 
+        // Babylon.js initialization (alternative 3D renderer)
+        async waitForBabylon(timeoutMs = 5000) {
+                return new Promise((resolve) => {
+                        try {
+                                if (typeof window !== 'undefined' && window.BABYLON) return resolve(true);
+                                // If preload exposed babylon via window.celestis, attach it
+                                try { if (window.celestis && window.celestis.babylon) { window.BABYLON = window.celestis.babylon; return resolve(true); } } catch (_) {}
+
+                                let settled = false;
+                                const cleanup = () => {
+                                        try { window.removeEventListener('babylon-ready', onReady); } catch(_){}
+                                        try { clearTimeout(timer); } catch(_){}
+                                };
+
+                                const onReady = () => { if (settled) return; settled = true; cleanup(); resolve(true); };
+                                window.addEventListener('babylon-ready', onReady, { once: true });
+
+                                // If a CDN script already exists, wait briefly for it to register
+                                const existing = Array.from(document.getElementsByTagName('script')).find(s => s.src && (s.src.includes('babylonjs.com') || s.src.includes('babylon.js')));
+                                if (!existing) {
+                                        // inject CDN UMD as a last resort
+                                        try {
+                                                const s = document.createElement('script');
+                                                s.type = 'text/javascript';
+                                                s.src = 'https://cdn.babylonjs.com/babylon.js';
+                                                s.onload = () => { try { window.dispatchEvent(new CustomEvent('babylon-ready')); } catch(_){} };
+                                                s.onerror = () => { /* ignore - timeout will handle */ };
+                                                document.head.appendChild(s);
+                                        } catch (_) {}
+                                }
+
+                                const timer = setTimeout(() => { if (!settled) { settled = true; cleanup(); resolve(!!(typeof window !== 'undefined' && window.BABYLON)); } }, timeoutMs);
+                        } catch (e) {
+                                try { resolve(!!(typeof window !== 'undefined' && window.BABYLON)); } catch(_) { resolve(false); }
+                        }
+                });
+        }
+
+        async setupBabylonEngine() {
+                try {
+                        // Wait for Babylon to be available on window (preload or CDN). If not available within timeout, fail gracefully.
+                        const ready = await this.waitForBabylon(6000);
+                        if (!ready || typeof window.BABYLON === 'undefined') {
+                                throw new Error('BABYLON not found on window');
+                        }
+
+                        const canvas = document.getElementById('avatarCanvas');
+                        if (!canvas) throw new Error('Avatar canvas not found');
+
+                        // Create engine and scene if not already created
+                        if (!this._babylonEngine) {
+                                try {
+                                        // Try default (WebGL2 preferred)
+                                        this._babylonEngine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+                                } catch (e) {
+                                        debugLog('Babylon Engine creation (WebGL2) failed: ' + (e?.message || e));
+                                        // Try forcing WebGL1 as a fallback (disable WebGL2 support)
+                                        try {
+                                                this._babylonEngine = new BABYLON.Engine(canvas, true, { disableWebGL2Support: true, preserveDrawingBuffer: true, stencil: true });
+                                                debugLog('Babylon Engine created with WebGL1 fallback (disableWebGL2Support=true)');
+                                        } catch (e2) {
+                                                debugLog('Babylon Engine creation (WebGL1 fallback) failed: ' + (e2?.message || e2));
+                                                throw new Error('WebGL not supported');
+                                        }
+                                }
+                        }
+
+                        if (!this._babylonScene) {
+                                this._babylonScene = new BABYLON.Scene(this._babylonEngine);
+
+                                // Camera (ArcRotate for easy orbiting)
+                                this._babylonCamera = new BABYLON.ArcRotateCamera('cam', Math.PI / 2, Math.PI / 2.5, 4, new BABYLON.Vector3(0, 1, 0), this._babylonScene);
+                                this._babylonCamera.attachControl(canvas, true);
+
+                                // Lights
+                                const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0, 1, 0), this._babylonScene);
+                                hemi.intensity = 0.9;
+                                const dir = new BABYLON.DirectionalLight('dir', new BABYLON.Vector3(-0.5, -1, -0.5), this._babylonScene);
+                                dir.position = new BABYLON.Vector3(2, 4, 2);
+
+                                // Environment
+                                try { this._babylonScene.clearColor = new BABYLON.Color4(0, 0, 0, 0); } catch(_) {}
+
+                                // Render loop
+                                this._babylonEngine.runRenderLoop(() => {
+                                        try {
+                                                if (this._babylonScene) this._babylonScene.render();
+                                        } catch (e) { /* swallow render errors */ }
+                                });
+
+                                // create subtle background visuals for Babylon
+                                try { this.createBabylonBackgroundParticles(); } catch (_) {}
+
+                                window.addEventListener('resize', () => {
+                                        try { this._babylonEngine.resize(); } catch (_) {}
+                                });
+                        }
+
+                        debugLog('Babylon.js initialized');
+                        this.updateAvatarStatus('Babylon.js engine ready');
+                        return true;
+                } catch (e) {
+                        debugLog('setupBabylonEngine failed: ' + (e?.message || e));
+                        return false;
+                }
+        }
+
+        // Load a GLB/GLTF buffer into Babylon scene
+        async loadBabylonFromBuffer(buffer, filePath) {
+                try {
+                        const ok = await this.setupBabylonEngine();
+
+                        if (!ok) {
+                                throw new Error('Babylon engine failed to initialize');
+                        }
+
+                        // Ensure a scene exists to append to
+                        if (!this._babylonScene) {
+                                if (this._babylonEngine) {
+                                        debugLog('Babylon: no scene present after setup, creating new scene');
+                                        this._babylonScene = new BABYLON.Scene(this._babylonEngine);
+                                } else {
+                                        throw new Error('No Babylon scene or engine available to append to');
+                                }
+                        }
+
+                        const blob = new Blob([buffer], { type: 'model/gltf-binary' });
+                        const url = URL.createObjectURL(blob);
+
+                        // Ensure Babylon loaders (GLTF) are available when using CDN UMD
+                        try { await this.ensureBabylonLoaders(); } catch (e) { debugLog('ensureBabylonLoaders failed: ' + (e?.message || e)); }
+                        debugLog('Babylon: importing model from blob URL');
+
+                        return await new Promise((resolve, reject) => {
+                                try {
+                                        // Determine plugin extension (without leading dot) to help SceneLoader choose correct importer for blob URLs
+                                        // Map file extensions to Babylon plugin names. Many .vrm files are GLB
+                                        // binaries at the container level; prefer 'glb' so the GLTF loader
+                                        // handles VRM content when a dedicated VRM plugin isn't registered.
+                                        let plugin = 'glb';
+                                        try {
+                                                const ext = (this.getExtension(filePath) || '.glb').toLowerCase();
+                                                if (ext === '.vrm') {
+                                                        plugin = 'glb';
+                                                } else {
+                                                        plugin = (ext.charAt(0) === '.') ? ext.slice(1) : ext;
+                                                }
+                                        } catch (_) { plugin = 'glb'; }
+                                        debugLog('Babylon: calling SceneLoader.Append with plugin=' + plugin);
+
+                                        // Debug: print loader/global state right before Append to help diagnose
+                                        try {
+                                                debugLog('Debug BABYLON global present: ' + !!(window.BABYLON));
+                                                debugLog('Debug BABYLON.GLTFFileLoader present: ' + !!(window.BABYLON && window.BABYLON.GLTFFileLoader));
+                                                debugLog('Debug celestis.babylonLoaders present: ' + !!(window.celestis && window.celestis.babylonLoaders));
+                                                // list any loaded script srcs that include 'loader' or 'babylon'
+                                                try {
+                                                        const scripts = Array.from(document.getElementsByTagName('script')).map(s=>s.src||s.textContent||'').filter(t=>t && (t.includes('loader')||t.includes('babylon')));
+                                                        debugLog('Debug loaded scripts matching loader/babylon: ' + JSON.stringify(scripts));
+                                                } catch(_) {}
+                                        } catch(_) {}
+
+                                        BABYLON.SceneLoader.Append('', url, this._babylonScene, (scene) => {
+                                                // model loaded into this._babylonScene
+                                                const meshes = scene.meshes || [];
+                                                const root = meshes.length ? meshes[0] : null;
+                                                debugLog('Babylon: model appended, meshes=' + meshes.length);
+
+                                                // attempt simple framing of camera
+                                                try { this._frameBabylonModel(); } catch (_) {}
+
+                                                // run optimizations and debug markers
+                                                try { this.optimizeBabylonModel(root); } catch (_) {}
+                                                try { this.addBabylonDebugMarkers(root); } catch (_) {}
+
+                                                try { URL.revokeObjectURL(url); } catch (_) {}
+
+                                                resolve({ scene: scene, root: root });
+                                        }, null, (scene, message, exception) => {
+                                                debugLog('Babylon load error: ' + message + ' ' + (exception && exception.message));
+                                                try { URL.revokeObjectURL(url); } catch (_) {}
+                                                reject(new Error(message || 'Babylon load failed'));
+                                        }, plugin);
+                                } catch (e) { try { URL.revokeObjectURL(url); } catch(_){}; reject(e); }
+                        });
+                } catch (e) {
+                        debugLog('loadBabylonFromBuffer failed: ' + (e?.message || e));
+                        throw e;
+                }
+        }
+
+        // Simple framing helper to position camera to view the imported model
+        _frameBabylonModel() {
+                try {
+                        if (!this._babylonScene || !this._babylonCamera) return;
+                        const meshes = this._babylonScene.meshes || [];
+                        if (!meshes.length) return;
+                        const boundingInfo = meshes[0].getHierarchyBoundingVectors(true);
+                        const min = boundingInfo.min; const max = boundingInfo.max;
+                        const center = BABYLON.Vector3.Center(min, max);
+                        const radius = BABYLON.Vector3.Distance(min, max) * 0.5 || 1;
+                        this._babylonCamera.setTarget(center);
+                        this._babylonCamera.radius = Math.max(1.2, radius * 2.0);
+                } catch (e) {
+                        debugLog('_frameBabylonModel error: ' + (e?.message || e));
+                }
+        }
+
+        // Create subtle background particles in Babylon scene
+        createBabylonBackgroundParticles() {
+                try {
+                        if (!this._babylonScene) return;
+                        const particleCount = 50;
+                        const parent = new BABYLON.TransformNode('BackgroundParticles', this._babylonScene);
+                        for (let i = 0; i < particleCount; i++) {
+                                const sphere = BABYLON.MeshBuilder.CreateSphere('p' + i, { diameter: 0.04, segments: 8 }, this._babylonScene);
+                                const mat = new BABYLON.StandardMaterial('pm' + i, this._babylonScene);
+                                mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+                                mat.alpha = 0.08 + Math.random() * 0.2;
+                                sphere.material = mat;
+                                sphere.position = new BABYLON.Vector3((Math.random() - 0.5) * 20, Math.random() * 10, (Math.random() - 0.5) * 20);
+                                sphere.parent = parent;
+                        }
+                        this._babylonBackgroundParticles = parent;
+                        debugLog('✓ Babylon background particles created');
+                } catch (e) {
+                        debugLog('createBabylonBackgroundParticles error: ' + (e?.message || e));
+                }
+        }
+
+        // Add debug markers (Babylon)
+        addBabylonDebugMarkers(root) {
+                try {
+                        if (!this._babylonScene) return;
+                        // remove existing
+                        const existing = this._babylonScene.getTransformNodeByName('DEBUG_RED_MARKER');
+                        if (existing) existing.dispose();
+
+                        const red = BABYLON.MeshBuilder.CreateBox('DEBUG_RED_MARKER', { size: 0.2 }, this._babylonScene);
+                        const redMat = new BABYLON.StandardMaterial('DEBUG_RED_MAT', this._babylonScene);
+                        redMat.diffuseColor = new BABYLON.Color3(1, 0, 0);
+                        red.material = redMat;
+                        if (root && root.getBoundingInfo) {
+                                const bv = root.getBoundingInfo().boundingBox;
+                                const center = bv.centerWorld || BABYLON.Vector3.Center(bv.minimumWorld, bv.maximumWorld);
+                                red.position = center.add(new BABYLON.Vector3(0.5, 1, 0));
+                        }
+
+                        const green = BABYLON.MeshBuilder.CreateBox('DEBUG_GREEN_MARKER', { size: 0.1 }, this._babylonScene);
+                        const gmat = new BABYLON.StandardMaterial('DEBUG_GREEN_MAT', this._babylonScene);
+                        gmat.diffuseColor = new BABYLON.Color3(0, 1, 0);
+                        green.material = gmat;
+                        if (root && root.getBoundingInfo) {
+                                const bv = root.getBoundingInfo().boundingBox;
+                                const center = bv.centerWorld || BABYLON.Vector3.Center(bv.minimumWorld, bv.maximumWorld);
+                                green.position = center.clone();
+                        }
+                } catch (e) {
+                        debugLog('addBabylonDebugMarkers error: ' + (e?.message || e));
+                }
+        }
+
+        // Optimize Babylon model materials for background rendering
+        optimizeBabylonModel(root) {
+                try {
+                        if (!root) return;
+                        const scene = this._babylonScene;
+                        const meshes = (root.getChildMeshes) ? root.getChildMeshes() : (scene.meshes || []);
+                        meshes.forEach(mesh => {
+                                if (!mesh.material) return;
+                                try {
+                                        const mat = mesh.material;
+                                        if (mat.emissiveColor) mat.emissiveColor = mat.emissiveColor.scale ? mat.emissiveColor.scale(1.2) : mat.emissiveColor;
+                                        if (mat.albedoColor && (mat.albedoColor.r === 0 && mat.albedoColor.g === 0 && mat.albedoColor.b === 0)) {
+                                                mat.albedoColor = new BABYLON.Color3(1,1,1);
+                                        }
+                                        mat.needDepthPrePass = true;
+                                } catch (_) {}
+                                try { mesh.alwaysSelectAsActiveMesh = true; } catch(_) {}
+                        });
+                        debugLog('optimizeBabylonModel completed');
+                } catch (e) {
+                        debugLog('optimizeBabylonModel error: ' + (e?.message || e));
+                }
+        }
+
         // If preload exposed UMD sources (for packaged builds), inject them into the document
         attemptInjectPreloadUmd() {
                 try {
@@ -385,6 +684,108 @@ class CelestisAI {
                         return false;
                 }
         }
+
+                // Ensure Babylon loaders (UMD) are present when using the CDN UMD build
+                ensureBabylonLoaders(timeoutMs = 8000) {
+                        return new Promise((resolve, reject) => {
+                                try {
+                                        if (typeof window === 'undefined' || typeof window.BABYLON === 'undefined') {
+                                                return reject(new Error('BABYLON global not available'));
+                                        }
+
+                                        // If GLTFFileLoader already registered, nothing to do
+                                        if (window.BABYLON && window.BABYLON.GLTFFileLoader) {
+                                                return resolve(true);
+                                        }
+
+                                        // Try to find a loaders script already present
+                                        const existing = Array.from(document.getElementsByTagName('script')).find(s => s.src && s.src.includes('babylonjs.loaders'));
+                                        if (existing) {
+                                                // if it's already loaded and GLTFFileLoader not present, wait briefly
+                                                const maybeReady = () => {
+                                                        if (window.BABYLON && window.BABYLON.GLTFFileLoader) return resolve(true);
+                                                        // allow a little time
+                                                        setTimeout(() => {
+                                                                if (window.BABYLON && window.BABYLON.GLTFFileLoader) return resolve(true);
+                                                                return reject(new Error('babylon loaders script present but loader not registered'));
+                                                        }, 300);
+                                                };
+                                                maybeReady();
+                                                return;
+                                        }
+
+                                        // Otherwise inject the UMD loaders script from the canonical CDN
+                                        // If preload provided a loaders UMD text, inject that first (packaged app scenario)
+                                        try {
+                                                if (window.celestis && window.celestis.babylonLoaders && typeof window.celestis.babylonLoaders === 'string') {
+                                                        const txt = window.celestis.babylonLoaders;
+                                                        const sInline = document.createElement('script');
+                                                        sInline.type = 'text/javascript';
+                                                        sInline.text = txt;
+                                                        document.head.appendChild(sInline);
+                                                        // allow a tick for registration
+                                                        setTimeout(() => {
+                                                                if (window.BABYLON && window.BABYLON.GLTFFileLoader) return resolve(true);
+                                                        }, 20);
+                                                }
+                                        } catch (e) { /* ignore and continue to CDN fallback */ }
+
+                                        // Try local node_modules copy first (useful in developer environments)
+                                        try {
+                                                const localPath = '../node_modules/@babylonjs/loaders/dist/babylonjs.loaders.min.js';
+                                                debugLog('Attempting to fetch local babylon loaders at ' + localPath);
+                                                try {
+                                                        fetch(localPath).then(rLocal => {
+                                                                if (rLocal && rLocal.ok) {
+                                                                        return rLocal.text().then(txtLocal => {
+                                                                                const sLocal = document.createElement('script');
+                                                                                sLocal.type = 'text/javascript';
+                                                                                sLocal.text = txtLocal;
+                                                                                document.head.appendChild(sLocal);
+                                                                                // allow a tick for registration
+                                                                                return new Promise(res => setTimeout(res, 40)).then(() => {
+                                                                                        if (window.BABYLON && window.BABYLON.GLTFFileLoader) return resolve(true);
+                                                                                        debugLog('Local babylon loaders injection did not register GLTFFileLoader');
+                                                                                        return null;
+                                                                                });
+                                                                        });
+                                                                } else {
+                                                                        debugLog('Local babylon loaders not found (status: ' + (rLocal && rLocal.status) + ')');
+                                                                        return null;
+                                                                }
+                                                        }).catch(lfErr => {
+                                                                debugLog('Fetching local babylon loaders failed: ' + (lfErr && lfErr.message ? lfErr.message : lfErr));
+                                                        });
+                                                } catch (lfErr2) {
+                                                        debugLog('Fetching local babylon loaders failed: ' + (lfErr2 && lfErr2.message ? lfErr2.message : lfErr2));
+                                                }
+                                        } catch (e) { /* ignore and continue to preload/CDN fallback */ }
+
+                                        const loadersUrl = 'https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js';
+                                        const s = document.createElement('script');
+                                        s.type = 'text/javascript';
+                                        s.src = loadersUrl;
+                                        s.onload = () => {
+                                                setTimeout(() => {
+                                                        if (window.BABYLON && window.BABYLON.GLTFFileLoader) return resolve(true);
+                                                        return reject(new Error('babylon loaders loaded but GLTFFileLoader not registered'));
+                                                }, 50);
+                                        };
+                                        s.onerror = (ev) => {
+                                                reject(new Error('Failed to load babylon loaders script'));
+                                        };
+                                        document.head.appendChild(s);
+
+                                        // Safety timeout
+                                        setTimeout(() => {
+                                                if (window.BABYLON && window.BABYLON.GLTFFileLoader) return resolve(true);
+                                                reject(new Error('Timeout waiting for babylon loaders to register'));
+                                        }, timeoutMs);
+                                } catch (e) {
+                                        reject(e);
+                                }
+                        });
+                }
 
         // Try dynamic import('three') from renderer context. If successful, dispatch a window event.
         async attemptDynamicImportRenderer() {
@@ -702,8 +1103,19 @@ class CelestisAI {
                                 try {
                                         debugLog('Loading internal avatar: ' + fileName);
                                         const buffer = await ipc.invoke('read-internal-avatar', fileName);
-                                        // Prefer VRM/GLTF loading for internal avatars
-                                        await this.loadVRMFromBuffer(buffer, fileName);
+                                        // Decide load strategy based on renderer
+                                        const engine = (this.settings && this.settings.rendererEngine) ? this.settings.rendererEngine : 'three';
+                                        const ext = this.getExtension(fileName);
+                                        if (this.isRenderer3D(engine) && ['.glb', '.vrm'].includes(ext)) {
+                                                await this.loadVRMFromBuffer(buffer, fileName);
+                                        } else if (!this.isRenderer3D(engine) && ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext)) {
+                                                await this.load2DFromBuffer(buffer, fileName);
+                                        } else {
+                                                debugLog('Selected internal avatar has unsupported extension for current renderer: ' + fileName);
+                                                this.addMessage('Unsupported avatar file type for current renderer', 'system');
+                                                return;
+                                        }
+
                                         // Also ask main to forward buffer to preview window (send a transferable copy)
                                         try {
                                                 ipc.send('forward-to-preview', buffer, fileName);
@@ -818,12 +1230,25 @@ class CelestisAI {
                         const list = await ipc.invoke('list-internal-avatars');
                         const select = document.getElementById('internalAvatarSelect');
                         if (!select) return;
+                        // Filter list based on currently selected renderer mode
+                        const engine = (this.settings && this.settings.rendererEngine) ? this.settings.rendererEngine : 'three';
+                        const allowed = this.getAllowedExtensions(engine);
                         select.innerHTML = '<option value="">Internal Avatars...</option>';
                         list.forEach(item => {
-                                const opt = document.createElement('option');
-                                opt.value = item.name;
-                                opt.textContent = item.name;
-                                select.appendChild(opt);
+                                try {
+                                        const ext = this.getExtension(item.name);
+                                        if (!allowed.includes(ext)) return; // skip unsupported types for current renderer
+                                        const opt = document.createElement('option');
+                                        opt.value = item.name;
+                                        opt.textContent = item.name;
+                                        select.appendChild(opt);
+                                } catch (e) {
+                                        // If ext resolution fails, include the item conservatively
+                                        const opt = document.createElement('option');
+                                        opt.value = item.name;
+                                        opt.textContent = item.name;
+                                        select.appendChild(opt);
+                                }
                         });
                         debugLog('Loaded internal avatars: ' + list.length);
 
@@ -832,14 +1257,24 @@ class CelestisAI {
                                 if (this.settings && this.settings.internalAvatar) {
                                         const saved = list.find(x => x.name === this.settings.internalAvatar);
                                         if (saved) {
-                                                select.value = saved.name;
-                                                debugLog('Auto-loading remembered internal avatar: ' + saved.name);
-                                                try {
-                                                        const buffer = await ipc.invoke('read-internal-avatar', saved.name);
-                                                        await this.loadVRMFromBuffer(buffer, saved.name);
-                                                        try { ipc.send('forward-to-preview', buffer, saved.name); } catch(_) {}
-                                                } catch (e) {
-                                                        debugLog('Auto-load internal avatar failed: ' + (e?.message || e));
+                                                // Only auto-load if the remembered internal avatar is allowed in current renderer
+                                                const savedExt = this.getExtension(saved.name);
+                                                if (allowed.includes(savedExt)) {
+                                                        select.value = saved.name;
+                                                        debugLog('Auto-loading remembered internal avatar: ' + saved.name);
+                                                        try {
+                                                                const buffer = await ipc.invoke('read-internal-avatar', saved.name);
+                                                                if (this.isRenderer3D(engine)) {
+                                                                        await this.loadVRMFromBuffer(buffer, saved.name);
+                                                                } else {
+                                                                        await this.load2DFromBuffer(buffer, saved.name);
+                                                                }
+                                                                try { ipc.send('forward-to-preview', buffer, saved.name); } catch(_) {}
+                                                        } catch (e) {
+                                                                debugLog('Auto-load internal avatar failed: ' + (e?.message || e));
+                                                        }
+                                                } else {
+                                                        debugLog('Remembered internal avatar ignored for current renderer due to extension: ' + saved.name);
                                                 }
                                         }
                                 }
@@ -848,6 +1283,42 @@ class CelestisAI {
                         }
                 } catch (e) {
                         debugLog('Failed to load internal avatars: ' + (e?.message || e));
+                }
+        }
+
+        // Return true if the specified engine is a 3D renderer
+        isRenderer3D(engine) {
+                const e = engine || (this.settings && this.settings.rendererEngine) || 'three';
+                return (e === 'three' || e === 'babylon');
+        }
+
+        // Return allowed extensions (lowercased) for a given renderer engine
+        getAllowedExtensions(engine) {
+                if (this.isRenderer3D(engine)) {
+                        return ['.glb', '.vrm'];
+                }
+                // 2D renderer accepts common image formats
+                return ['.png', '.jpg', '.jpeg', '.webp', '.gif'];
+        }
+
+        // Robust extension extraction: trims trailing dots and returns lowercased extension with leading dot
+        getExtension(fileName) {
+                try {
+                        if (!fileName || typeof fileName !== 'string') return '';
+                        // Trim trailing dots and whitespace
+                        let name = fileName.trim().replace(/\.+$/, '');
+                        // Attempt to use path.extname when available
+                        try {
+                                const p = require('path');
+                                const ex = p.extname(name || '') || '';
+                                return ex.toLowerCase();
+                        } catch (_) {
+                                // Fallback to regex extraction
+                                const m = name.match(/\.([a-z0-9]+)$/i);
+                                return m ? ('.' + m[1].toLowerCase()) : '';
+                        }
+                } catch (e) {
+                        return '';
                 }
         }
 
@@ -934,6 +1405,21 @@ class CelestisAI {
                         }
                 }
 
+                if (engine === 'babylon') {
+                        debugLog('[app.js] Renderer set to Babylon - attempting to load model into Babylon scene');
+                        try {
+                                const result = await this.loadBabylonFromBuffer(buffer, filePath);
+                                debugLog('[app.js] Babylon loader returned result');
+                                this.updateAvatarStatus('Model loaded into Babylon scene');
+                                // store reference to last loaded babylon root mesh
+                                try { this._babylonCurrentModel = result.root; } catch (_) {}
+                                return { scene: result.scene, root: result.root };
+                        } catch (e) {
+                                debugLog('Babylon module loader failed: ' + (e?.message || e));
+                                throw e;
+                        }
+                }
+
                 if (window.CelestisModules?.vrmLoader?.loadVRMFromBuffer) {
                         debugLog('[app.js] Module loader detected, delegating to vrmLoader.js');
                         try {
@@ -997,7 +1483,7 @@ class CelestisAI {
                         }
                         // else fallback to any image
                         if (!found) {
-                                found = list.find(x => ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(require('path').extname(x.name).toLowerCase()));
+                                found = list.find(x => ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(this.getExtension(x.name)));
                         }
                         if (!found) return;
 
@@ -1577,6 +2063,19 @@ class CelestisAI {
                         if (rendererEngine) rendererEngine.value = this.settings.rendererEngine || 'three';
                         if (avatarScroll) avatarScroll.checked = !!this.settings.avatarScroll;
                         if (avatarInChat) avatarInChat.checked = !!this.settings.avatarInChat;
+                        if (rendererEngine) {
+                                // When user changes renderer in the settings UI, refresh the internal avatar list to reflect file-type filtering
+                                rendererEngine.addEventListener('change', async (ev) => {
+                                        try {
+                                                this.settings.rendererEngine = ev.target.value;
+                                                // persist transient change to reflect immediately in UI
+                                                try { await ipc.invoke('save-settings', this.settings); } catch(_) {}
+                                                await this.loadInternalAvatars();
+                                        } catch (e) {
+                                                debugLog('Error handling rendererEngine change in settings UI: ' + (e?.message || e));
+                                        }
+                                });
+                        }
                         const rememberConversationEl = document.getElementById('rememberConversation');
                         const clearRememberedConversationBtn = document.getElementById('clearRememberedConversationBtn');
                         if (rememberConversationEl) rememberConversationEl.checked = !!this.settings.rememberConversation;
@@ -1832,7 +2331,7 @@ class CelestisAI {
                                 }
                         } catch (e) { debugLog('Error while saving remembered conversation: ' + (e?.message || e)); }
                         
-                        if (this.vrm) {
+                        if (this.vrm || this._babylonCurrentModel) {
                                 this.animateAvatar('talk');
                         }
                 } catch (error) {
@@ -2033,19 +2532,49 @@ class CelestisAI {
         }
 
         animateAvatar(animationType) {
-                if (!this.vrm) return;
+                // Support both Three-based VRM (`this.vrm`) and Babylon-loaded model (`this._babylonCurrentModel`)
+                try {
+                        if (animationType !== 'talk') return;
 
-                if (animationType === 'talk') {
-                        const originalRotation = this.vrm.scene.rotation.clone();
-                        const talkAnimation = () => {
-                                this.vrm.scene.rotation.y = originalRotation.y + Math.sin(Date.now() * 0.005) * 0.05;
-                        };
-                        
-                        const animationInterval = setInterval(talkAnimation, 16);
-                        setTimeout(() => {
-                                clearInterval(animationInterval);
-                                this.vrm.scene.rotation.copy(originalRotation);
-                        }, 2000);
+                        // Babylon path
+                        if (!this.vrm && this._babylonCurrentModel) {
+                                const root = this._babylonCurrentModel;
+                                try {
+                                        const original = root.rotation ? root.rotation.clone() : new BABYLON.Vector3(0,0,0);
+                                        const tick = () => {
+                                                try {
+                                                        root.rotation.y = original.y + Math.sin(Date.now() * 0.005) * 0.05;
+                                                } catch (_) {}
+                                        };
+                                        const id = setInterval(tick, 16);
+                                        setTimeout(() => {
+                                                clearInterval(id);
+                                                try { root.rotation.copyFrom(original); } catch (_) {}
+                                        }, 2000);
+                                        return;
+                                } catch (e) {
+                                        debugLog('animateAvatar (Babylon) error: ' + (e?.message || e));
+                                }
+                        }
+
+                        // Three.js path
+                        if (this.vrm && this.vrm.scene) {
+                                try {
+                                        const originalRotation = this.vrm.scene.rotation.clone();
+                                        const talkAnimation = () => {
+                                                this.vrm.scene.rotation.y = originalRotation.y + Math.sin(Date.now() * 0.005) * 0.05;
+                                        };
+                                        const animationInterval = setInterval(talkAnimation, 16);
+                                        setTimeout(() => {
+                                                clearInterval(animationInterval);
+                                                this.vrm.scene.rotation.copy(originalRotation);
+                                        }, 2000);
+                                } catch (e) {
+                                        debugLog('animateAvatar (Three) error: ' + (e?.message || e));
+                                }
+                        }
+                } catch (e) {
+                        debugLog('animateAvatar top-level error: ' + (e?.message || e));
                 }
         }
 
