@@ -14,12 +14,6 @@ Version 1.0 got archived due to poor performance in tests and in most of machine
 - **Desktop Application**: Built with Electron for cross-platform compatibility
 - **Real-time 3D Rendering**: Powered by babylon.js (WIP)
 
-## What is TCC Version
-
-Tcc Version is for my Undergraduate Thesis 
-(also known as trabalho de conclusão de curso here in Brazil the country that i live) in software engineering 
-This Version has some limitations in avatars hiding all avatars except celestis for making standart the experience making possible to analyse the efect in my thesis and for stability reasons hiding some functions like 3d (hided in the default version too for some problems in babylon.js api at the moment of the writing) making the experience of the testing candidates better as possible
-
 ## Setup Instructions
 
 ### Prerequisites
