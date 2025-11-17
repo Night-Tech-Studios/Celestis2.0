@@ -437,3 +437,8 @@ body {
 .chat-messages::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.5);
 }
+
+/* Helper class used to hide elements in Celestis-only mode */
+.hidden-by-celestis {
+    display: none !important;
+}
