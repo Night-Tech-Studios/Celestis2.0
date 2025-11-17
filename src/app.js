@@ -43,6 +43,10 @@ class CelestisAI {
                 };
                 
                 this.conversationHistory = [];
+                // Celestis-only UI lock: hide other avatars/templates by default
+                this.celestisOnlyMode = true;
+                this._hiddenAvatarOptions = [];
+                this._savedTemplateState = null;
                 debugLog('CelestisAI constructor called');
                 this.initWithDelay();
         }
@@ -207,6 +211,11 @@ class CelestisAI {
                         try { await self.loadSettings(); } catch (_) {}
                         // Then enumerate internal avatars and auto-load the saved one (if any)
                         try { await self.loadInternalAvatars(); } catch (_) {}
+
+                        // Apply Celestis-only UI lockdown if enabled
+                        try { if (self.celestisOnlyMode) { self.applyCelestisOnlyMode(); self.applyTemplateLockdown(); } } catch(_){}
+                        // Always setup Konami listener so user can reveal hidden UI
+                        try { self.setupKonamiListener(); } catch(_){}
                         
                         // Choose renderer based on settings: 'three' or '2d'
                         // We attempt to initialize Three.js safely when requested, but fall
@@ -1284,6 +1293,128 @@ class CelestisAI {
                 } catch (e) {
                         debugLog('Failed to load internal avatars: ' + (e?.message || e));
                 }
+        }
+
+        // Apply Celestis-only mode: hide all internal avatars except those matching 'celestis'
+        applyCelestisOnlyMode() {
+                try {
+                        const select = document.getElementById('internalAvatarSelect');
+                        if (!select) return;
+
+                        // Save current options so we can restore later
+                        this._hiddenAvatarOptions = [];
+                        const keepList = [];
+                        for (let i = select.options.length - 1; i >= 0; i--) {
+                                const opt = select.options[i];
+                                const val = (opt.value || '').toLowerCase();
+                                if (!val) continue; // skip placeholder
+                                if (val.indexOf('celestis') === -1) {
+                                        // remove and remember
+                                        this._hiddenAvatarOptions.push({ index: i, option: opt.cloneNode(true) });
+                                        select.remove(i);
+                                } else {
+                                        keepList.push(opt.value);
+                                }
+                        }
+
+                        // If no Celestis option found, keep placeholder only
+                        if (!select.querySelector('option[value]')) {
+                                // leave placeholder
+                        }
+
+                        // Hide import buttons to prevent adding new avatars while locked
+                        try { document.getElementById('importVrmBtn')?.classList.add('hidden-by-celestis'); } catch(_){}
+                        try { document.getElementById('import2dBtn')?.classList.add('hidden-by-celestis'); } catch(_){}
+
+                        debugLog('applyCelestisOnlyMode: hidden ' + this._hiddenAvatarOptions.length + ' avatars');
+                } catch (e) { debugLog('applyCelestisOnlyMode error: ' + (e?.message || e)); }
+        }
+
+        // Restore previously hidden avatars and templates
+        restoreAllAvatarsAndTemplates() {
+                try {
+                        const select = document.getElementById('internalAvatarSelect');
+                        if (select && this._hiddenAvatarOptions && this._hiddenAvatarOptions.length) {
+                                // Re-insert hidden options at their previous indices where possible
+                                this._hiddenAvatarOptions.sort((a,b)=>a.index-b.index).forEach(item=>{
+                                        try { select.add(item.option, select.options[item.index] || null); } catch(_) { select.add(item.option); }
+                                });
+                                this._hiddenAvatarOptions = [];
+                        }
+
+                        // Show import buttons again
+                        try { document.getElementById('importVrmBtn')?.classList.remove('hidden-by-celestis'); } catch(_){}
+                        try { document.getElementById('import2dBtn')?.classList.remove('hidden-by-celestis'); } catch(_){}
+
+                        // Restore template presets visibility
+                        try {
+                                const presets = document.querySelectorAll('#templatePresets .preset-btn');
+                                presets.forEach(b => b.classList.remove('hidden-by-celestis'));
+                        } catch(_){}
+
+                        // Restore textarea if we saved a value
+                        try {
+                                const ta = document.getElementById('initialTemplate');
+                                if (ta && this._savedTemplateState) {
+                                        ta.value = this._savedTemplateState.value || ta.value;
+                                        ta.readOnly = !!this._savedTemplateState.readOnly;
+                                }
+                                this._savedTemplateState = null;
+                        } catch(_){}
+
+                        debugLog('restoreAllAvatarsAndTemplates: restored UI');
+                } catch (e) { debugLog('restoreAllAvatarsAndTemplates error: ' + (e?.message || e)); }
+        }
+
+        // Hide template presets except the Celestis one
+        applyTemplateLockdown() {
+                try {
+                        const presets = document.querySelectorAll('#templatePresets .preset-btn');
+                        if (!presets || !presets.length) return;
+                        // Save textarea state
+                        try {
+                                const ta = document.getElementById('initialTemplate');
+                                if (ta) {
+                                        this._savedTemplateState = { value: ta.value, readOnly: ta.readOnly };
+                                        // Set Celestis default template and make it readonly while locked
+                                        ta.value = 'You are a helpful AI assistant in a VRM avatar application. Be friendly and engaging.';
+                                        ta.readOnly = true;
+                                }
+                        } catch(_){}
+
+                        presets.forEach(b => {
+                                try {
+                                        const preset = (b.getAttribute('data-preset') || '').toLowerCase();
+                                        if (preset !== 'celestis') b.classList.add('hidden-by-celestis');
+                                } catch(_){}
+                        });
+                        debugLog('applyTemplateLockdown: applied preset hiding');
+                } catch (e) { debugLog('applyTemplateLockdown error: ' + (e?.message || e)); }
+        }
+
+        // Konami code: when entered, reveal the hidden UI
+        setupKonamiListener() {
+                try {
+                        const seq = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
+                        let position = 0;
+                        window.addEventListener('keydown', (ev) => {
+                                const key = ev.key;
+                                const expected = seq[position];
+                                if (!expected) { position = 0; return; }
+                                if (key.toLowerCase() === expected.toLowerCase()) {
+                                        position++;
+                                        if (position >= seq.length) {
+                                                // unlocked
+                                                this.celestisOnlyMode = false;
+                                                try { this.restoreAllAvatarsAndTemplates(); } catch(_){}
+                                                debugLog('Konami code entered: UI restored');
+                                                position = 0;
+                                        }
+                                } else {
+                                        position = (key.toLowerCase() === seq[0].toLowerCase()) ? 1 : 0;
+                                }
+                        });
+                } catch (e) { debugLog('setupKonamiListener error: ' + (e?.message || e)); }
         }
 
         // Return true if the specified engine is a 3D renderer
