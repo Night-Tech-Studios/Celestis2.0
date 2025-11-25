@@ -129,6 +129,24 @@ npm run build
 - Settings: persistent settings are stored in the OS user data directory (e.g. on Linux: ~/.config/<app>, on Windows: %APPDATA%\<app>). During development the app will also read `settings.json` in the repository root and attempt to migrate it to the user data directory on first run.
 - VRM files: Import from anywhere on your system
 
+## External TTS (SoVITS / GPT-SoVITS-Inference)
+
+This project can delegate Text-to-Speech (TTS) to an external SoVITS-style inference server such as the GPT-SoVITS-Inference project (https://github.com/AI-Hobbyist/GPT-SoVITS-Inference).
+
+Quick setup:
+
+1. Clone and run the GPT-SoVITS-Inference server locally following its instructions. A common local URL is `http://localhost:7860`.
+2. Start the Celestis app and open Settings → TTS.
+3. Enable `Use external SoVITS inference server`, set `Server URL` to your server (e.g. `http://localhost:7860`), optionally set `Endpoint` (defaults tried: `/generate`, `/synthesis`, `/tts`, `/api/tts`, `/sovits/infer`) and `Speaker` to the desired voice id or name.
+4. Click `Test TTS` to send a short test phrase and play audio returned by the server.
+
+Supported response formats:
+- Direct audio response (`audio/wav`, `audio/mpeg`, etc.) — the client will play the returned audio.
+- JSON response containing base64 audio in a field named `audio`, `wav`, or `base64`.
+- Plain base64 text body containing the audio payload.
+
+If your GPT-SoVITS-Inference server uses a different API (form fields, model names, different JSON schema), provide the exact request/response details and I can adjust the client to match it.
+
 ## Web / Mobile WebView build
 
 There is a minimal web-friendly preview in `web/` that uses ESM imports so it can run in a browser or be embedded in mobile WebViews (Capacitor, Cordova, React Native WebView). See `web/README_WEB.md` for details.

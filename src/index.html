@@ -117,6 +117,22 @@
                         </select>
                     </div>
                     <div class="setting-group">
+                        <label for="themePreference">Theme</label>
+                        <div style="display:flex; flex-direction:column; gap:6px; margin-top:6px;">
+                            <label><input type="radio" name="themePreference" id="themePrefSystem" value="system"> Same as system</label>
+                            <label><input type="radio" name="themePreference" id="themePrefLight" value="light"> Light theme</label>
+                            <label><input type="radio" name="themePreference" id="themePrefDark" value="dark"> Dark theme</label>
+                        </div>
+                        <small class="setting-help">Choose your preferred UI theme. You can change this later in Settings.</small>
+                    </div>
+                    <div class="setting-group">
+                        <label for="autoStart">Auto Start</label>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                            <input type="checkbox" id="autoStart" />
+                            <small class="setting-help" style="margin:0">Start Celestis automatically when you log into your OS (if supported).</small>
+                        </div>
+                    </div>
+                    <div class="setting-group">
                         <label for="micSelect">Microphone:</label>
                         <select id="micSelect">
                             <option value="">(Default system microphone)</option>
@@ -137,6 +153,28 @@
                                 </select>
                             </div>
                             <small class="setting-help">TTS is performed by the browser using available system voices. If no voice appears, try restarting the app or your OS.</small>
+                            <div id="ttsExternalOptions" class="hidden-by-celestis" style="border-top:1px solid #eee; padding-top:8px; margin-top:8px;">
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <input type="checkbox" id="ttsUseExternal" />
+                                    <small class="setting-help" style="margin:0">Use external SoVITS inference server</small>
+                                </div>
+                                <div style="display:flex; gap:8px; margin-top:6px;">
+                                    <label for="ttsServerUrl" style="min-width:110px;">Server URL:</label>
+                                    <input id="ttsServerUrl" type="text" placeholder="http://localhost:7860" style="flex:1" />
+                                </div>
+                                <div style="display:flex; gap:8px; margin-top:6px;">
+                                    <label for="ttsServerEndpoint" style="min-width:110px;">Endpoint:</label>
+                                    <input id="ttsServerEndpoint" type="text" placeholder="/generate or /synthesis" style="flex:1" />
+                                </div>
+                                <div style="display:flex; gap:8px; margin-top:6px;">
+                                    <label for="ttsSpeaker" style="min-width:110px;">Speaker:</label>
+                                    <input id="ttsSpeaker" type="text" placeholder="speaker id or name" style="flex:1" />
+                                </div>
+                                <small class="setting-help">When enabled, Celestis will POST text to the external server and play returned audio. The client will try common endpoints if none is specified.</small>
+                                <div style="margin-top:8px;">
+                                    <button id="testTtsBtn" type="button" class="btn btn-secondary">Test TTS</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="setting-group">
@@ -256,20 +294,36 @@
         try {
             window.addEventListener('error', (ev) => {
                 try {
-                    console.error('[GLOBAL ERROR]', ev.error || ev.message || ev);
+                    const info = {
+                        message: ev.message || (ev.error && ev.error.message) || String(ev),
+                        filename: ev.filename || null,
+                        lineno: ev.lineno || null,
+                        colno: ev.colno || null,
+                        stack: ev.error && ev.error.stack ? ev.error.stack : null,
+                        celestis_preload: !!(window.celestis),
+                        celestis_threeUmd_length: (window.celestis && (window.celestis.__threeUmd || window.celestis.threeUmd)) ? (window.celestis.__threeUmd || window.celestis.threeUmd).length : 0,
+                        celestis_gltfUmd_length: (window.celestis && (window.celestis.__gltfUmd || window.celestis.gltfUmd)) ? (window.celestis.__gltfUmd || window.celestis.gltfUmd).length : 0
+                    };
+                    console.error('[GLOBAL ERROR]', info.message, 'at', info.filename + ':' + info.lineno + ':' + info.colno);
+                    if (info.stack) console.error(info.stack);
                     if (window && window.electronAPI && window.electronAPI.send) {
-                        window.electronAPI.send('debug-log', '[GLOBAL ERROR] ' + (ev.error && ev.error.stack ? ev.error.stack : (ev.message || String(ev))));
+                        try { window.electronAPI.send('debug-log', '[GLOBAL ERROR] ' + JSON.stringify(info)); } catch(_) {}
                     }
-                } catch(_){}
+                } catch(_){
+                    try { console.error('[GLOBAL ERROR] (failed to log details)', _); } catch(_){}
+                }
             });
 
             window.addEventListener('unhandledrejection', (ev) => {
                 try {
-                    console.error('[UNHANDLED REJECTION]', ev.reason || ev);
+                    const reason = ev && ev.reason ? ev.reason : ev;
+                    const info = { message: String(reason && reason.message ? reason.message : reason), stack: reason && reason.stack ? reason.stack : null };
+                    console.error('[UNHANDLED REJECTION]', info.message);
+                    if (info.stack) console.error(info.stack);
                     if (window && window.electronAPI && window.electronAPI.send) {
-                        window.electronAPI.send('debug-log', '[UNHANDLED REJECTION] ' + (ev.reason && ev.reason.stack ? ev.reason.stack : String(ev.reason || ev)));
+                        try { window.electronAPI.send('debug-log', '[UNHANDLED REJECTION] ' + JSON.stringify(info)); } catch(_) {}
                     }
-                } catch(_){}
+                } catch(_){ }
             });
         } catch (e) { /* ignore */ }
 
@@ -479,5 +533,35 @@
 
     <script src="modules/vrmLoader.js"></script>
     <script src="app.js"></script>
+    <!-- First-run modal: ask about theme and auto-start -->
+    <div id="firstRunModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Welcome to Celestis</h2>
+            </div>
+            <div class="modal-body">
+                <p>Please choose a theme preference and whether Celestis should start automatically on login.</p>
+                <div class="setting-group">
+                    <label>Theme preference</label>
+                    <div style="display:flex; flex-direction:column; gap:6px; margin-top:6px;">
+                        <label><input type="radio" name="firstTheme" id="firstThemeSystem" value="system"> Same as system</label>
+                        <label><input type="radio" name="firstTheme" id="firstThemeLight" value="light"> Light theme</label>
+                        <label><input type="radio" name="firstTheme" id="firstThemeDark" value="dark"> Dark theme</label>
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <label>Auto start</label>
+                    <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                        <input type="checkbox" id="firstAutoStart" />
+                        <small class="setting-help" style="margin:0">Start Celestis automatically when you log into your OS (if supported).</small>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="firstRunSkipBtn" class="btn btn-secondary">Skip</button>
+                <button id="firstRunAcceptBtn" class="btn btn-primary">Apply</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

@@ -446,3 +446,90 @@ body {
 .chat-messages::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.5);
 }
+
+/* Dark theme overrides */
+.dark-theme body, .dark-theme .main-content, .dark-theme .chat-container {
+    background: #0f1724 !important;
+    color: #e6eef8 !important;
+}
+.dark-theme .header {
+    background: rgba(12, 18, 28, 0.95);
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.dark-theme .header h1 { color: #e6eef8; }
+.dark-theme .header-controls .btn, .dark-theme .btn-secondary {
+    background: rgba(255,255,255,0.04);
+    color: #e6eef8;
+    border-color: rgba(255,255,255,0.04);
+}
+.dark-theme .chat-messages {
+    background: transparent;
+}
+.dark-theme .message.user {
+    background: linear-gradient(135deg, #2b6cb0 0%, #4c51bf 100%);
+    color: #ffffff;
+}
+.dark-theme .message.ai {
+    background: rgba(20, 26, 36, 0.8);
+    color: #dbeafe;
+}
+.dark-theme .message.system {
+    background: rgba(255,193,7,0.08);
+    color: #ffd27a;
+    border-color: rgba(255,193,7,0.18);
+}
+.dark-theme .text-input,
+.dark-theme .setting-group input,
+.dark-theme .setting-group select,
+.dark-theme .setting-group textarea {
+    background: rgba(255,255,255,0.03);
+    color: #e6eef8;
+    border-color: rgba(255,255,255,0.06);
+}
+.dark-theme .text-input::placeholder,
+.dark-theme .setting-group input::placeholder,
+.dark-theme .setting-group textarea::placeholder {
+    color: #94a3b8;
+}
+.dark-theme .voice-status, .dark-theme .status-indicator {
+    background: rgba(255,255,255,0.04);
+    color: #e6eef8;
+    border-color: rgba(255,255,255,0.04);
+}
+.dark-theme .modal-content {
+    background: #071022;
+    color: #e6eef8;
+}
+.dark-theme .modal-header h2 { color: #e6eef8; }
+.dark-theme .setting-help { color: #cbd5e1; }
+.dark-theme .setting-group label { color: #cbd5e1; }
+.dark-theme label { color: #cbd5e1; }
+.dark-theme select, .dark-theme option { color: #e6eef8; background: rgba(255,255,255,0.02); }
+.dark-theme input[type="radio"], .dark-theme input[type="checkbox"] { accent-color: #6b7de8; }
+
+/* Make the internal avatar select more readable in dark theme */
+.dark-theme #internalAvatarSelect {
+    background: rgba(255,255,255,0.03) !important;
+    color: #e6eef8 !important;
+    border: 1px solid rgba(255,255,255,0.06) !important;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+}
+.dark-theme #internalAvatarSelect option {
+    background: #071022 !important;
+    color: #e6eef8 !important;
+}
+/* Windows/Edge native dropdown arrow tweak */
+.dark-theme #internalAvatarSelect::-ms-expand { display: block; filter: invert(1) brightness(0.9); }
+/* fallback arrow for modern browsers when appearance removed */
+.dark-theme .header-controls { position: relative; }
+.dark-theme #internalAvatarSelect.wrapper-fix { padding-right: 2.6rem; }
+.dark-theme #internalAvatarSelect::after { content: '\25BC'; position: absolute; right: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: #94a3b8; }
+
+/* Improve modal scrollbar contrast in dark theme */
+.dark-theme .modal-body::-webkit-scrollbar { width: 10px; }
+.dark-theme .modal-body::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); }
+.dark-theme .modal-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 6px; }
+.dark-theme .btn-primary { box-shadow: 0 6px 18px rgba(76,81,191,0.18); }
+.hidden-by-celestis { display: none !important; }

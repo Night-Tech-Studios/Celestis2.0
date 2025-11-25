@@ -330,20 +330,72 @@ ipcMain.handle('load-settings', async () => {
 app.whenReady().then(() => {
   console.log('Electron app ready, creating window...');
   createWindow();
-  // Enable autostart on Windows (register the app to run at login)
+  // Apply saved auto-start preference from settings (if present)
   try {
-    if (process.platform === 'win32') {
+    // Try to read saved settings and apply auto-start if configured
+    const userDataDir = app.getPath('userData');
+    const userSettingsPath = path.join(userDataDir, 'settings.json');
+    let saved = null;
+    if (fs.existsSync(userSettingsPath)) {
+      try { saved = JSON.parse(fs.readFileSync(userSettingsPath, 'utf8')); } catch(_) { saved = null; }
+    }
+    if (saved && typeof saved.autoStart !== 'undefined') {
+      try {
+        const ok = setAutoStart(!!saved.autoStart);
+        console.log('Applied saved autoStart setting:', !!saved.autoStart, 'result:', ok);
+      } catch (e) { console.warn('Failed to apply saved autoStart:', e && e.message); }
+    }
+  } catch (e) {
+    console.warn('Failed to apply auto-start preference at startup:', e && e.message);
+  }
+});
+
+// Cross-platform helper to enable/disable auto-start
+function setAutoStart(enabled) {
+  try {
+    if (process.platform === 'darwin' || process.platform === 'win32') {
+      // Electron provides setLoginItemSettings for macOS and Windows
       app.setLoginItemSettings({
-        openAtLogin: true,
+        openAtLogin: !!enabled,
         path: process.execPath,
         args: []
       });
-      console.log('Autostart enabled for Windows login');
+      return true;
     }
+
+    // Linux: create/remove a .desktop autostart file in ~/.config/autostart
+    if (process.platform === 'linux') {
+      try {
+        const home = app.getPath('home');
+        const autostartDir = path.join(home, '.config', 'autostart');
+        if (!fs.existsSync(autostartDir)) {
+          try { fs.mkdirSync(autostartDir, { recursive: true }); } catch(_){}
+        }
+        const desktopFile = path.join(autostartDir, 'celestis.desktop');
+        if (enabled) {
+          const execPath = process.execPath.replace(/"/g, '\\"');
+          const contents = `[Desktop Entry]\nType=Application\nVersion=1.0\nName=Celestis\nExec=${execPath}\nX-GNOME-Autostart-enabled=true\nNoDisplay=false\n`;
+          fs.writeFileSync(desktopFile, contents, { mode: 0o644 });
+          return true;
+        } else {
+          if (fs.existsSync(desktopFile)) {
+            try { fs.unlinkSync(desktopFile); } catch(_){}
+          }
+          return true;
+        }
+      } catch (e) {
+        console.warn('Linux auto-start set failed:', e && e.message);
+        return false;
+      }
+    }
+
+    // Unsupported platform: no-op but return false
+    return false;
   } catch (e) {
-    console.warn('Failed to set autostart:', e.message || e);
+    console.warn('setAutoStart error:', e && e.message);
+    return false;
   }
-});
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -360,6 +412,17 @@ app.on('activate', () => {
 // Log IPC communication for debugging
 ipcMain.on('debug-log', (event, message) => {
   console.log('Renderer log:', message);
+});
+
+// IPC: set auto-start preference from renderer
+ipcMain.handle('set-auto-start', async (event, enabled) => {
+  try {
+    const ok = setAutoStart(!!enabled);
+    return { success: !!ok };
+  } catch (e) {
+    console.error('set-auto-start handler failed:', e && e.message);
+    return { success: false, error: (e && e.message) };
+  }
 });
 
 // List internal avatars from assets/avatars

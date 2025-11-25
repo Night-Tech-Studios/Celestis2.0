@@ -40,6 +40,18 @@ class CelestisAI {
                         // Stored remembered conversation (array of {role,content})
                         rememberedConversation: [],
                         initialTemplate: 'You are a helpful AI assistant in a VRM avatar application. Be friendly and engaging.'
+                        ,
+                        // TTS settings
+                        ttsEnabled: false,
+                        ttsVoice: '',
+                        ttsUseExternal: false,
+                        ttsServerUrl: 'http://localhost:7860',
+                        ttsServerEndpoint: '',
+                        ttsSpeaker: ''
+                        ,
+                        // Theme and auto-start
+                        themePreference: 'system', // 'system' | 'light' | 'dark'
+                        autoStart: false
                 };
                 
                 this.conversationHistory = [];
@@ -205,6 +217,16 @@ class CelestisAI {
                         self.setupEventListeners();
                         // Load saved settings first so we can honor a remembered internal avatar
                         try { await self.loadSettings(); } catch (_) {}
+                        // Apply theme from settings immediately
+                        try { self.applyThemeFromSettings(); } catch(_){}
+                        // Show first-run dialog if this is the first time user runs the app
+                        try {
+                                const firstDone = localStorage.getItem('celestis_firstRunDone');
+                                if (!firstDone) {
+                                        // delay slightly until UI is ready
+                                        setTimeout(() => { try { self.showFirstRunModal(); } catch(_){} }, 250);
+                                }
+                        } catch(_) {}
                         // Then enumerate internal avatars and auto-load the saved one (if any)
                         try { await self.loadInternalAvatars(); } catch (_) {}
                         
@@ -1189,6 +1211,29 @@ class CelestisAI {
                         debugLog('✗ Save settings button not found');
                 }
 
+                // Test TTS button in settings
+                const testTtsBtn = document.getElementById('testTtsBtn');
+                if (testTtsBtn) {
+                        testTtsBtn.addEventListener('click', async (e) => {
+                                e.preventDefault();
+                                debugLog('Test TTS clicked');
+                                try {
+                                        // Ensure settings are read from UI before testing
+                                        await this.saveSettings();
+                                } catch (_) {}
+                                try {
+                                        await this.speakText('This is a test of the text to speech system.');
+                                        this.addMessage('TTS test played', 'system');
+                                } catch (err) {
+                                        debugLog('TTS test failed: ' + (err?.message || err));
+                                        this.addMessage('TTS test failed: ' + (err?.message || err), 'system');
+                                }
+                        });
+                        debugLog('✓ Test TTS button bound');
+                } else {
+                        debugLog('✗ Test TTS button not found');
+                }
+
                 const settingsModal = document.getElementById('settingsModal');
                 if (settingsModal) {
                         settingsModal.addEventListener('click', (e) => {
@@ -1254,6 +1299,9 @@ class CelestisAI {
 
                         // If the user previously selected an internal avatar, auto-select and load it
                         try {
+                                // Try to restore from localStorage backup if settings didn't include it
+                                try { this._restoreRememberedInternalAvatar(); } catch(_){}
+
                                 if (this.settings && this.settings.internalAvatar) {
                                         const saved = list.find(x => x.name === this.settings.internalAvatar);
                                         if (saved) {
@@ -1473,6 +1521,14 @@ class CelestisAI {
         // Attempt to load a default embedded or internal avatar image
         async loadDefault2DAvatar() {
                 try {
+                        // If a remembered internal avatar is set or a 2D image is already loaded, don't override it
+                        try {
+                                if ((this.settings && this.settings.internalAvatar) || (this._2d && this._2d.image)) {
+                                        debugLog('Skipping loadDefault2DAvatar because an internal avatar is already set');
+                                        return;
+                                }
+                        } catch(_) {}
+
                         const list = await ipc.invoke('list-internal-avatars');
                         // Prefer explicit default filenames
                         const preferred = ['default-2d.png', 'default.png', 'avatar-2d.png'];
@@ -2032,7 +2088,9 @@ class CelestisAI {
                         } else {
                                 this.settings.internalAvatar = fileName;
                         }
-                        await ipc.invoke('save-settings', this.settings);
+                        // Persist to app settings and also keep a lightweight localStorage backup
+                        try { await ipc.invoke('save-settings', this.settings); } catch (e) { debugLog('Failed to persist remembered internal avatar to main settings: ' + (e?.message||e)); }
+                        try { localStorage.setItem('celestis_internalAvatar', this.settings.internalAvatar || ''); } catch (_) {}
                         debugLog('Remembered internal avatar: ' + (fileName || '<cleared>'));
                 } catch (e) {
                         debugLog('Failed to save remembered internal avatar: ' + (e?.message || e));
@@ -2063,6 +2121,18 @@ class CelestisAI {
                         if (rendererEngine) rendererEngine.value = this.settings.rendererEngine || 'three';
                         if (avatarScroll) avatarScroll.checked = !!this.settings.avatarScroll;
                         if (avatarInChat) avatarInChat.checked = !!this.settings.avatarInChat;
+                        // Theme and auto-start UI
+                        const themePrefSystem = document.getElementById('themePrefSystem');
+                        const themePrefLight = document.getElementById('themePrefLight');
+                        const themePrefDark = document.getElementById('themePrefDark');
+                        const autoStartEl = document.getElementById('autoStart');
+                        try {
+                                const pref = (this.settings && this.settings.themePreference) ? this.settings.themePreference : 'system';
+                                if (themePrefSystem) themePrefSystem.checked = pref === 'system';
+                                if (themePrefLight) themePrefLight.checked = pref === 'light';
+                                if (themePrefDark) themePrefDark.checked = pref === 'dark';
+                                if (autoStartEl) autoStartEl.checked = !!(this.settings && this.settings.autoStart);
+                        } catch(_) {}
                         if (rendererEngine) {
                                 // When user changes renderer in the settings UI, refresh the internal avatar list to reflect file-type filtering
                                 rendererEngine.addEventListener('change', async (ev) => {
@@ -2120,6 +2190,13 @@ class CelestisAI {
                                         if (this.settings.avatarInChat) this.placeAvatarInChat(); else this.placeAvatarFloating();
                                 });
                         }
+                        // Theme controls live update
+                        try {
+                                if (themePrefSystem) themePrefSystem.addEventListener('change', (e) => { if (e.target.checked) { this.settings.themePreference='system'; try{ ipc.invoke('save-settings', this.settings); }catch(_){} this.applyThemeFromSettings(); } });
+                                if (themePrefLight) themePrefLight.addEventListener('change', (e) => { if (e.target.checked) { this.settings.themePreference='light'; try{ ipc.invoke('save-settings', this.settings); }catch(_){} this.applyThemeFromSettings(); } });
+                                if (themePrefDark) themePrefDark.addEventListener('change', (e) => { if (e.target.checked) { this.settings.themePreference='dark'; try{ ipc.invoke('save-settings', this.settings); }catch(_){} this.applyThemeFromSettings(); } });
+                                if (autoStartEl) autoStartEl.addEventListener('change', async (e) => { this.settings.autoStart = !!e.target.checked; try{ await ipc.invoke('save-settings', this.settings); }catch(_){} try{ await ipc.invoke('set-auto-start', !!this.settings.autoStart); }catch(_){} });
+                        } catch(_) {}
                 } else {
                         debugLog('ERROR: Settings modal not found!');
                 }
@@ -2160,11 +2237,41 @@ class CelestisAI {
                         this.recognition.lang = this.settings.voiceLanguage;
                 }
 
+                // TTS external settings
+                const ttsUseExternalEl = document.getElementById('ttsUseExternal');
+                const ttsServerUrlEl = document.getElementById('ttsServerUrl');
+                const ttsServerEndpointEl = document.getElementById('ttsServerEndpoint');
+                const ttsSpeakerEl = document.getElementById('ttsSpeaker');
+                const ttsEnabledEl = document.getElementById('ttsEnabled');
+                const ttsVoiceEl = document.getElementById('ttsVoice');
+                if (ttsUseExternalEl) this.settings.ttsUseExternal = !!ttsUseExternalEl.checked;
+                if (ttsServerUrlEl) this.settings.ttsServerUrl = ttsServerUrlEl.value || this.settings.ttsServerUrl;
+                if (ttsServerEndpointEl) this.settings.ttsServerEndpoint = ttsServerEndpointEl.value || this.settings.ttsServerEndpoint;
+                if (ttsSpeakerEl) this.settings.ttsSpeaker = ttsSpeakerEl.value || this.settings.ttsSpeaker;
+                if (ttsEnabledEl) this.settings.ttsEnabled = !!ttsEnabledEl.checked;
+                if (ttsVoiceEl) this.settings.ttsVoice = ttsVoiceEl.value || '';
+
+                // Theme and auto-start
+                try {
+                        const themeElDark = document.getElementById('themePrefDark');
+                        const themeElLight = document.getElementById('themePrefLight');
+                        const themeElSystem = document.getElementById('themePrefSystem');
+                        if (themeElDark && themeElDark.checked) this.settings.themePreference = 'dark';
+                        else if (themeElLight && themeElLight.checked) this.settings.themePreference = 'light';
+                        else this.settings.themePreference = 'system';
+                } catch(_) {}
+                const autoStartEl = document.getElementById('autoStart');
+                if (autoStartEl) this.settings.autoStart = !!autoStartEl.checked;
+
                 try {
                         await ipc.invoke('save-settings', this.settings);
                         this.closeSettings();
                         this.addMessage('Settings saved successfully!', 'system');
                         this.applyAvatarScrollSetting();
+                        // apply theme change
+                        try { this.applyThemeFromSettings(); } catch(_){}
+                        // request main to set auto-start if available
+                        try { await ipc.invoke('set-auto-start', !!this.settings.autoStart); } catch(_){}
                         // apply avatar chat placement immediately
                         try { if (this.settings.avatarInChat) this.placeAvatarInChat(); else this.placeAvatarFloating(); } catch(_){}
                         debugLog('Settings saved successfully');
@@ -2241,10 +2348,128 @@ class CelestisAI {
                                 } catch (e) {
                                         debugLog('Error restoring remembered conversation: ' + (e?.message || e));
                                 }
+                        // Apply TTS settings into UI elements if present
+                        try {
+                                const ttsUseExternalEl = document.getElementById('ttsUseExternal');
+                                const ttsServerUrlEl = document.getElementById('ttsServerUrl');
+                                const ttsServerEndpointEl = document.getElementById('ttsServerEndpoint');
+                                const ttsSpeakerEl = document.getElementById('ttsSpeaker');
+                                const ttsEnabledEl = document.getElementById('ttsEnabled');
+                                const ttsVoiceEl = document.getElementById('ttsVoice');
+                                if (ttsUseExternalEl) ttsUseExternalEl.checked = !!this.settings.ttsUseExternal;
+                                if (ttsServerUrlEl) ttsServerUrlEl.value = this.settings.ttsServerUrl || '';
+                                if (ttsServerEndpointEl) ttsServerEndpointEl.value = this.settings.ttsServerEndpoint || '';
+                                if (ttsSpeakerEl) ttsSpeakerEl.value = this.settings.ttsSpeaker || '';
+                                if (ttsEnabledEl) ttsEnabledEl.checked = !!this.settings.ttsEnabled;
+                                if (ttsVoiceEl) ttsVoiceEl.value = this.settings.ttsVoice || '';
+                        } catch (e) { /* ignore */ }
                         }
                 } catch (error) {
                         debugLog('ERROR loading settings: ' + error.message);
                 }
+        }
+
+        // Helper to ensure remembered internal avatar is restored reliably
+        _restoreRememberedInternalAvatar() {
+                try {
+                        if (this.settings && this.settings.internalAvatar) return; // already present
+                        let saved = null;
+                        try { saved = localStorage.getItem('celestis_internalAvatar'); } catch(_) { saved = null; }
+                        if (saved) {
+                                this.settings.internalAvatar = saved;
+                                debugLog('Restored internalAvatar from localStorage backup: ' + saved);
+                        }
+                } catch (e) { debugLog('_restoreRememberedInternalAvatar error: ' + (e?.message||e)); }
+        }
+
+        // Apply theme based on saved settings
+        applyThemeFromSettings() {
+                try {
+                        const pref = (this.settings && this.settings.themePreference) ? this.settings.themePreference : 'system';
+                        this._systemThemeListener && this._systemThemeListener.remove && this._systemThemeListener.remove();
+                        this.applyTheme(pref);
+                        // If using system preference, listen for changes
+                        if (pref === 'system' && window.matchMedia) {
+                                const mq = window.matchMedia('(prefers-color-scheme: dark)');
+                                const handler = (ev) => { try { this.applyTheme('system'); } catch(_){} };
+                                try { mq.addEventListener ? mq.addEventListener('change', handler) : mq.addListener(handler); } catch(_){}
+                                this._systemThemeListener = { mq, handler, remove: () => { try { mq.removeEventListener ? mq.removeEventListener('change', handler) : mq.removeListener(handler); } catch(_){} } };
+                        }
+                } catch (e) { debugLog('applyThemeFromSettings error: ' + (e?.message||e)); }
+        }
+
+        applyTheme(pref) {
+                try {
+                        const doc = document.documentElement || document.body || document;
+                        const currentPref = pref || 'system';
+                        if (currentPref === 'dark') {
+                                document.body.classList.add('dark-theme');
+                        } else if (currentPref === 'light') {
+                                document.body.classList.remove('dark-theme');
+                        } else {
+                                // system
+                                const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+                                if (dark) document.body.classList.add('dark-theme'); else document.body.classList.remove('dark-theme');
+                        }
+                } catch (e) { debugLog('applyTheme error: ' + (e?.message||e)); }
+        }
+
+        // First-run modal flow
+        showFirstRunModal() {
+                try {
+                        const modal = document.getElementById('firstRunModal');
+                        if (!modal) return;
+                        modal.style.display = 'block';
+
+                        // default selections reflect current settings or system
+                        const pref = (this.settings && this.settings.themePreference) ? this.settings.themePreference : 'system';
+                        const map = { system: 'firstThemeSystem', light: 'firstThemeLight', dark: 'firstThemeDark' };
+                        const elId = map[pref] || 'firstThemeSystem';
+                        const el = document.getElementById(elId);
+                        if (el) el.checked = true;
+
+                        const autoEl = document.getElementById('firstAutoStart');
+                        if (autoEl) autoEl.checked = !!(this.settings && this.settings.autoStart);
+
+                        const applyBtn = document.getElementById('firstRunAcceptBtn');
+                        const skipBtn = document.getElementById('firstRunSkipBtn');
+
+                        const cleanup = () => {
+                                try { applyBtn && applyBtn.removeEventListener('click', applyHandler); } catch(_){}
+                                try { skipBtn && skipBtn.removeEventListener('click', skipHandler); } catch(_){}
+                                try { modal.style.display = 'none'; } catch(_){}
+                        };
+
+                        const applyHandler = async (ev) => {
+                                try {
+                                        // read selection
+                                        let chosen = 'system';
+                                        try {
+                                                if (document.getElementById('firstThemeDark') && document.getElementById('firstThemeDark').checked) chosen = 'dark';
+                                                else if (document.getElementById('firstThemeLight') && document.getElementById('firstThemeLight').checked) chosen = 'light';
+                                                else chosen = 'system';
+                                        } catch(_){}
+                                        const auto = !!(document.getElementById('firstAutoStart') && document.getElementById('firstAutoStart').checked);
+                                        this.settings.themePreference = chosen;
+                                        this.settings.autoStart = auto;
+                                        // apply immediately and persist
+                                        try { this.applyThemeFromSettings(); } catch(_){}
+                                        try { await ipc.invoke('save-settings', this.settings); } catch(_){}
+                                        // ask main process to enable auto-start if supported
+                                        try { await ipc.invoke('set-auto-start', !!auto); } catch(_){}
+                                        localStorage.setItem('celestis_firstRunDone','1');
+                                } catch (e) { debugLog('firstRun apply error: ' + (e?.message||e)); }
+                                cleanup();
+                        };
+
+                        const skipHandler = (ev) => {
+                                try { localStorage.setItem('celestis_firstRunDone','1'); } catch(_){}
+                                cleanup();
+                        };
+
+                        applyBtn && applyBtn.addEventListener('click', applyHandler);
+                        skipBtn && skipBtn.addEventListener('click', skipHandler);
+                } catch (e) { debugLog('showFirstRunModal error: ' + (e?.message||e)); }
         }
 
         // Render the in-memory conversationHistory to the chat UI
@@ -2609,3 +2834,85 @@ class CelestisAI {
 debugLog('Script loaded, initializing app...');
 window.celestisAI = new CelestisAI();
 debugLog('CelestisAI instance created');
+
+// Attach external TTS helpers to the instance so we don't need to modify class internals
+(function(){
+        try {
+                const app = window.celestisAI;
+                if (!app) return;
+
+                app.speakText = async function(text) {
+                        if (!text) return;
+                        try {
+                                if (this.settings && this.settings.ttsUseExternal && this.settings.ttsServerUrl) {
+                                        try { await this.callExternalTTS(text); return; } catch (e) { debugLog('External TTS failed: ' + (e?.message||e)); }
+                                }
+                                if ('speechSynthesis' in window) {
+                                        const ut = new SpeechSynthesisUtterance(text);
+                                        try {
+                                                if (this.settings && this.settings.ttsVoice) {
+                                                        const voices = window.speechSynthesis.getVoices();
+                                                        const match = voices.find(v => v.name === this.settings.ttsVoice || v.lang === this.settings.ttsVoice);
+                                                        if (match) ut.voice = match;
+                                                }
+                                        } catch(_) {}
+                                        window.speechSynthesis.cancel();
+                                        window.speechSynthesis.speak(ut);
+                                }
+                        } catch (e) { debugLog('speakText error: ' + (e?.message||e)); }
+                };
+
+                app.callExternalTTS = async function(text) {
+                        const base = (this.settings && this.settings.ttsServerUrl) ? this.settings.ttsServerUrl.replace(/\/+$/, '') : '';
+                        if (!base) throw new Error('No external TTS server configured');
+                        const candidates = [];
+                        if (this.settings.ttsServerEndpoint && this.settings.ttsServerEndpoint.trim()) candidates.push(this.settings.ttsServerEndpoint.trim());
+                        candidates.push('/generate','/synthesis','/tts','/api/tts','/sovits/infer');
+                        const speaker = (this.settings && this.settings.ttsSpeaker) ? this.settings.ttsSpeaker : undefined;
+                        for (const ep of candidates) {
+                                const url = ep.startsWith('http') ? ep : (base + (ep.startsWith('/') ? '' : '/') + ep);
+                                debugLog('Trying external TTS endpoint: ' + url);
+                                try {
+                                        const payload = { text };
+                                        if (speaker) payload.speaker = speaker;
+                                        const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                                        if (!resp.ok) { debugLog('TTS endpoint non-OK: ' + resp.status); continue; }
+                                        const ct = resp.headers.get('content-type') || '';
+                                        if (ct.indexOf('audio') === 0 || ct.indexOf('application/octet-stream') === 0) {
+                                                const ab = await resp.arrayBuffer(); await this.playAudioBuffer(ab, ct || 'audio/wav'); return;
+                                        }
+                                        if (ct.indexOf('application/json') === 0 || ct.indexOf('text/plain') === 0) {
+                                                const j = await resp.json().catch(()=>null);
+                                                if (j && (j.audio || j.wav || j.base64)) { const b64 = j.audio || j.wav || j.base64; const ab = this._base64ToArrayBuffer(b64); await this.playAudioBuffer(ab,'audio/wav'); return; }
+                                        }
+                                        const txt = await resp.text().catch(()=>'');
+                                        if (txt && /^[A-Za-z0-9+/=\r\n]+$/.test(txt.trim())) { const ab = this._base64ToArrayBuffer(txt.trim()); await this.playAudioBuffer(ab,'audio/wav'); return; }
+                                        debugLog('Unsupported content-type from TTS: ' + ct);
+                                } catch (e) { debugLog('Error calling TTS endpoint ' + url + ': ' + (e?.message||e)); continue; }
+                        }
+                        throw new Error('No working TTS endpoint found');
+                };
+
+                app._base64ToArrayBuffer = function(base64) {
+                        const binaryString = atob(base64.replace(/\s+/g,'')); const len = binaryString.length; const bytes = new Uint8Array(len); for (let i=0;i<len;i++) bytes[i]=binaryString.charCodeAt(i); return bytes.buffer;
+                };
+
+                app.playAudioBuffer = async function(arrayBuffer, contentType) {
+                        try {
+                                const blob = new Blob([arrayBuffer], { type: contentType || 'audio/wav' });
+                                const url = URL.createObjectURL(blob);
+                                if (this._lastTtsAudio) { try{ this._lastTtsAudio.pause(); }catch(_){} try{ URL.revokeObjectURL(this._lastTtsUrl); }catch(_){} this._lastTtsAudio=null; this._lastTtsUrl=null; }
+                                const audio = new Audio(url);
+                                this._lastTtsAudio = audio; this._lastTtsUrl = url; audio.play().catch(err=>debugLog('Audio play failed: '+(err?.message||err)));
+                        } catch (e) { debugLog('playAudioBuffer error: ' + (e?.message||e)); }
+                };
+
+                // Wrap addMessage so AI responses trigger TTS without editing internal method
+                try {
+                        const origAdd = app.addMessage && app.addMessage.bind(app);
+                        if (origAdd) {
+                                app.addMessage = function(content, type){ try { origAdd(content,type); } catch(e){ try{ debugLog('wrapped addMessage orig failed: '+(e?.message||e)); }catch(_){} } try{ if (type==='ai' && this.settings && this.settings.ttsEnabled) { this.speakText(content).catch(err=>debugLog('speakText err: '+(err?.message||err))); } } catch(_){} };
+                        }
+                } catch(e) { debugLog('Failed to wrap addMessage: ' + (e?.message||e)); }
+        } catch (e) { console.warn('Failed to attach TTS helpers: ' + (e && e.message)); }
+})();
