@@ -417,6 +417,11 @@ body {
     border-color: #adb5bd;
 }
 
+/* Hidden helper class used for Celestis-only mode */
+.hidden-by-celestis {
+    display: none !important;
+}
+
 .modal-footer {
     padding: 1.5rem;
     border-top: 1px solid #eee;

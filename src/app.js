@@ -27,7 +27,7 @@ class CelestisAI {
                 this.recognition = null;
                 this.settings = {
                         openrouterApiKey: '',
-                        aiModel: 'meta-llama/llama-4-maverick:free',
+                        aiModel: 'mistral-7b-instruct-free',
                         voiceLanguage: 'en-US',
                         rendererEngine: 'babylon',
                         // Increase default timeout to allow slower environments to initialize Three.js
@@ -43,6 +43,10 @@ class CelestisAI {
                 };
                 
                 this.conversationHistory = [];
+                // Celestis-only UI lock: hide other avatars/templates by default
+                this.celestisOnlyMode = true;
+                this._hiddenAvatarOptions = [];
+                this._savedTemplateState = null;
                 debugLog('CelestisAI constructor called');
                 this.initWithDelay();
         }
@@ -207,6 +211,11 @@ class CelestisAI {
                         try { await self.loadSettings(); } catch (_) {}
                         // Then enumerate internal avatars and auto-load the saved one (if any)
                         try { await self.loadInternalAvatars(); } catch (_) {}
+
+                        // Apply Celestis-only UI lockdown if enabled
+                        try { if (self.celestisOnlyMode) { self.applyCelestisOnlyMode(); self.applyTemplateLockdown(); } } catch(_){}
+                        // Always setup Konami listener so user can reveal hidden UI
+                        try { self.setupKonamiListener(); } catch(_){}
                         
                         // Choose renderer based on settings: 'three' or '2d'
                         // We attempt to initialize Three.js safely when requested, but fall
@@ -1286,6 +1295,128 @@ class CelestisAI {
                 }
         }
 
+        // Apply Celestis-only mode: hide all internal avatars except those matching 'celestis'
+        applyCelestisOnlyMode() {
+                try {
+                        const select = document.getElementById('internalAvatarSelect');
+                        if (!select) return;
+
+                        // Save current options so we can restore later
+                        this._hiddenAvatarOptions = [];
+                        const keepList = [];
+                        for (let i = select.options.length - 1; i >= 0; i--) {
+                                const opt = select.options[i];
+                                const val = (opt.value || '').toLowerCase();
+                                if (!val) continue; // skip placeholder
+                                if (val.indexOf('celestis') === -1) {
+                                        // remove and remember
+                                        this._hiddenAvatarOptions.push({ index: i, option: opt.cloneNode(true) });
+                                        select.remove(i);
+                                } else {
+                                        keepList.push(opt.value);
+                                }
+                        }
+
+                        // If no Celestis option found, keep placeholder only
+                        if (!select.querySelector('option[value]')) {
+                                // leave placeholder
+                        }
+
+                        // Hide import buttons to prevent adding new avatars while locked
+                        try { document.getElementById('importVrmBtn')?.classList.add('hidden-by-celestis'); } catch(_){}
+                        try { document.getElementById('import2dBtn')?.classList.add('hidden-by-celestis'); } catch(_){}
+
+                        debugLog('applyCelestisOnlyMode: hidden ' + this._hiddenAvatarOptions.length + ' avatars');
+                } catch (e) { debugLog('applyCelestisOnlyMode error: ' + (e?.message || e)); }
+        }
+
+        // Restore previously hidden avatars and templates
+        restoreAllAvatarsAndTemplates() {
+                try {
+                        const select = document.getElementById('internalAvatarSelect');
+                        if (select && this._hiddenAvatarOptions && this._hiddenAvatarOptions.length) {
+                                // Re-insert hidden options at their previous indices where possible
+                                this._hiddenAvatarOptions.sort((a,b)=>a.index-b.index).forEach(item=>{
+                                        try { select.add(item.option, select.options[item.index] || null); } catch(_) { select.add(item.option); }
+                                });
+                                this._hiddenAvatarOptions = [];
+                        }
+
+                        // Show import buttons again
+                        try { document.getElementById('importVrmBtn')?.classList.remove('hidden-by-celestis'); } catch(_){}
+                        try { document.getElementById('import2dBtn')?.classList.remove('hidden-by-celestis'); } catch(_){}
+
+                        // Restore template presets visibility
+                        try {
+                                const presets = document.querySelectorAll('#templatePresets .preset-btn');
+                                presets.forEach(b => b.classList.remove('hidden-by-celestis'));
+                        } catch(_){}
+
+                        // Restore textarea if we saved a value
+                        try {
+                                const ta = document.getElementById('initialTemplate');
+                                if (ta && this._savedTemplateState) {
+                                        ta.value = this._savedTemplateState.value || ta.value;
+                                        ta.readOnly = !!this._savedTemplateState.readOnly;
+                                }
+                                this._savedTemplateState = null;
+                        } catch(_){}
+
+                        debugLog('restoreAllAvatarsAndTemplates: restored UI');
+                } catch (e) { debugLog('restoreAllAvatarsAndTemplates error: ' + (e?.message || e)); }
+        }
+
+        // Hide template presets except the Celestis one
+        applyTemplateLockdown() {
+                try {
+                        const presets = document.querySelectorAll('#templatePresets .preset-btn');
+                        if (!presets || !presets.length) return;
+                        // Save textarea state
+                        try {
+                                const ta = document.getElementById('initialTemplate');
+                                if (ta) {
+                                        this._savedTemplateState = { value: ta.value, readOnly: ta.readOnly };
+                                        // Set Celestis default template and make it readonly while locked
+                                        ta.value = 'You are a helpful AI assistant in a VRM avatar application. Be friendly and engaging.';
+                                        ta.readOnly = true;
+                                }
+                        } catch(_){}
+
+                        presets.forEach(b => {
+                                try {
+                                        const preset = (b.getAttribute('data-preset') || '').toLowerCase();
+                                        if (preset !== 'celestis') b.classList.add('hidden-by-celestis');
+                                } catch(_){}
+                        });
+                        debugLog('applyTemplateLockdown: applied preset hiding');
+                } catch (e) { debugLog('applyTemplateLockdown error: ' + (e?.message || e)); }
+        }
+
+        // Konami code: when entered, reveal the hidden UI
+        setupKonamiListener() {
+                try {
+                        const seq = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
+                        let position = 0;
+                        window.addEventListener('keydown', (ev) => {
+                                const key = ev.key;
+                                const expected = seq[position];
+                                if (!expected) { position = 0; return; }
+                                if (key.toLowerCase() === expected.toLowerCase()) {
+                                        position++;
+                                        if (position >= seq.length) {
+                                                // unlocked
+                                                this.celestisOnlyMode = false;
+                                                try { this.restoreAllAvatarsAndTemplates(); } catch(_){}
+                                                debugLog('Konami code entered: UI restored');
+                                                position = 0;
+                                        }
+                                } else {
+                                        position = (key.toLowerCase() === seq[0].toLowerCase()) ? 1 : 0;
+                                }
+                        });
+                } catch (e) { debugLog('setupKonamiListener error: ' + (e?.message || e)); }
+        }
+
         // Return true if the specified engine is a 3D renderer
         isRenderer3D(engine) {
                 const e = engine || (this.settings && this.settings.rendererEngine) || 'three';
@@ -2341,40 +2472,23 @@ class CelestisAI {
         }
 
         async callOpenRouterAPI() {
-                const messages = [];
-                // If user set a username, expose it as a system-level identity hint so the AI can address them appropriately
-                try {
-                        if (this.settings && this.settings.username && this.settings.username.trim()) {
-                                messages.push({ role: 'system', content: `User identity: ${this.settings.username.trim()}. Use this name when addressing the user when appropriate.` });
-                        }
-                } catch (_) {}
+                const model = this.settings.aiModel || 'openai/gpt-4o-mini';
+                debugLog(`AI core request: model=${model}, apiKeySet=${!!this.settings.openrouterApiKey}, history=${this.conversationHistory.length}`);
 
-                // Primary system template that guides assistant behavior
-                messages.push({ role: 'system', content: this.settings.initialTemplate });
-                // Conversation history follows
-                messages.push(...this.conversationHistory);
-                
-                const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                        method: 'POST',
-                        headers: {
-                                'Authorization': `Bearer ${this.settings.openrouterApiKey}`,
-                                'Content-Type': 'application/json',
-                                'X-Title': 'Celestis AI Avatar'
-                        },
-                        body: JSON.stringify({
-                                model: this.settings.aiModel,
-                                messages: messages,
-                                max_tokens: 1000,
-                                temperature: 0.7
-                        })
+                const response = await ipc.invoke('generate-ai-response', {
+                        apiKey: this.settings.openrouterApiKey,
+                        model,
+                        conversationHistory: this.conversationHistory,
+                        settings: {
+                                username: this.settings.username,
+                                initialTemplate: this.settings.initialTemplate,
+                                voiceLanguage: this.settings.voiceLanguage,
+                                avatarInChat: this.settings.avatarInChat,
+                                rendererEngine: this.settings.rendererEngine
+                        }
                 });
 
-                if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                }
-
-                const data = await response.json();
-                return data.choices[0].message.content;
+                return response;
         }
 
         addMessage(content, type) {

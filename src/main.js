@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { generateCelestisReply, DEFAULT_MODEL } = require('./ai-core');
 
 // Ensure hardware acceleration / GPU features are encouraged on startup.
 // These command-line switches help on Windows where ANGLE/D3D may be required
@@ -323,6 +324,27 @@ ipcMain.handle('load-settings', async () => {
   } catch (error) {
     console.error('Error loading settings:', error);
     return null;
+  }
+});
+
+ipcMain.handle('generate-ai-response', async (event, payload = {}) => {
+  try {
+    const settings = payload.settings || {};
+    const apiKey = payload.apiKey || settings.openrouterApiKey || '';
+    const model = payload.model || settings.aiModel || DEFAULT_MODEL;
+    const conversationHistory = Array.isArray(payload.conversationHistory) ? payload.conversationHistory : [];
+
+    const result = await generateCelestisReply({
+      apiKey,
+      model,
+      conversationHistory,
+      settings
+    });
+
+    return result.text;
+  } catch (error) {
+    console.error('generate-ai-response failed:', error);
+    throw error;
   }
 });
 
