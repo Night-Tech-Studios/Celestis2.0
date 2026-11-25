@@ -1,7 +1,7 @@
 const { generateText } = require('ai');
 const { createOpenRouter } = require('@openrouter/ai-sdk-provider');
 
-const DEFAULT_MODEL = 'openai/gpt-4o-mini';
+const DEFAULT_MODEL = 'openrouter/free';
 
 function cleanText(value) {
         return typeof value === 'string' ? value.trim() : '';
